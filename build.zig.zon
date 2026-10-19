@@ -1,0 +1,13 @@
+.{
+    .name = .nanostudio,
+    .version = "0.1.0",
+    .fingerprint = 0x24cae1c20474a8a7,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .nanoui = .{
+            .url = "git+https://github.com/justrach/nanoui#d61e253205472cef0854367125295d87c810c5b3",
+            .hash = "nanoui-0.3.0-we0KMauiCwD52EsqNf0gVtDL5xzsPbpF96_fkSqnZTxn",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
