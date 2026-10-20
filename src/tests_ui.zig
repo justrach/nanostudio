@@ -137,3 +137,26 @@ test "the capture bar: Display or Window; a window picked from the list" {
     try std.testing.expectEqualStrings("Zed", a.barWindow().?.app);
     try t.screenshot("/tmp/nanostudio-bar-window.png");
 }
+
+test "a take that couldn't start says why across the card, in a narrow window too" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const home = "/tmp/nanostudio-test-failed";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    theme.apply(false);
+    var a = try App.init(gpa, io, home);
+    defer a.deinit();
+    a.screen_access = false;
+    a.recorder.state = .failed;
+    a.recorder.failure = "Screen Recording is off for nanostudio: allow it in System Settings, Privacy & Security, Screen & System Audio Recording.";
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&a, view.view), .{ .width = 900, .height = 760, .theme = theme.ui() });
+    defer t.deinit();
+    t.settle(0.2);
+    try t.screenshot("/tmp/nanostudio-home-failed.png");
+    // Words, not a column of letters; and the access card's buttons fit.
+    const why = t.findText(a.recorder.failure) orelse return error.NoFailure;
+    try std.testing.expect(why.w > 200 and why.h < 80);
+    const again = t.findText("Check Again") orelse return error.NoButton;
+    try std.testing.expect(again.x + again.w <= 900);
+}

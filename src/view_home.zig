@@ -21,10 +21,14 @@ pub fn view(c: *ui.Context, a: *App) void {
     defer body.end();
     hero(c);
     {
-        const r = ui.div(c).row().wFull().gap(16);
+        // Side by side when there's room; else one over the other.
+        const room = c.size.w - sidebar_w - 48;
+        const wide = room >= 700;
+        const r = if (wide) ui.div(c).row().wFull().gap(16).itemsStart() else ui.div(c).column().wFull().gap(16);
         defer r.end();
-        setup(c, a);
-        access(c, a);
+        // Widths in points: wrapped text measures by them.
+        setup(c, a, if (wide) room - access_w - 16 else null);
+        access(c, a, wide);
     }
     after(c);
 }
@@ -43,8 +47,10 @@ fn duration(c: *ui.Context, s: f64) []const u8 {
     return c.print("{d}:{d:0>2}", .{ total / 60, total % 60 });
 }
 
+const sidebar_w: f32 = 272;
+
 fn sidebar(c: *ui.Context, a: *App) void {
-    const side = ui.div(c).column().w(272).hFull().bg(theme.panel).border(theme.border);
+    const side = ui.div(c).column().w(sidebar_w).hFull().bg(theme.panel).border(theme.border);
     defer side.end();
     {
         // Room for the window's traffic lights on the left.
@@ -113,8 +119,10 @@ fn hero(c: *ui.Context) void {
     ui.text(c, "Choose a screen, then make your take. nanostudio follows your cursor and clicks, so the edit can zoom where you worked.", .{ .size = 14, .color = theme.muted, .wrap = true });
 }
 
-fn setup(c: *ui.Context, a: *App) void {
-    const k = card(c).grow();
+const access_w: f32 = 320;
+
+fn setup(c: *ui.Context, a: *App, width: ?f32) void {
+    const k = if (width) |w| card(c).w(w) else card(c).wFull();
     defer k.end();
     eyebrow(c, "01  /  SET UP YOUR TAKE");
     ui.text(c, "Source", .{ .size = 13, .weight = .semibold });
@@ -130,22 +138,32 @@ fn setup(c: *ui.Context, a: *App) void {
         ui.spacer(c);
         ui.text(c, c.print("{d}×{d}", .{ @as(u32, @intFromFloat(d.width)), @as(u32, @intFromFloat(d.height)) }), .{ .size = 11.5, .color = theme.muted, .mono = true });
     }
-    const f = ui.div(c).row().wFull().gap(10).itemsCenter().pt(4);
-    defer f.end();
-    const busy = a.recorder.state == .starting or a.recorder.state == .saving;
-    if (ui.button(c, if (busy) "Starting…" else "Start recording", .{ .variant = .primary, .size = 13, .icon = "record.circle" }).clicked and !busy) {
-        a.bar_mode = .display;
-        a.openBar();
+    {
+        const f = ui.div(c).row().wFull().pt(4);
+        defer f.end();
+        const busy = a.recorder.state == .starting or a.recorder.state == .saving;
+        if (ui.button(c, if (busy) "Starting…" else "Start recording", .{ .variant = .primary, .size = 13, .icon = "record.circle" }).clicked and !busy) {
+            a.bar_mode = .display;
+            a.openBar();
+        }
     }
-    ui.text(c, "A capture bar opens: record a display or a window, and stop from it.", .{ .size = 11.5, .color = theme.faint });
+    ui.text(c, "A capture bar opens: record a display or a window, and stop from it.", .{ .size = 11.5, .color = theme.faint, .wrap = true });
+    // Why the last take didn't start, on its own line, the width of the card.
     if (a.recorder.state == .failed) {
-        ui.spacer(c);
+        const w = ui.div(c).column().wFull().gap(4).p(10).rounded(8).bg(theme.danger.alpha(0.08)).border(theme.danger.alpha(0.3));
+        defer w.end();
+        {
+            const t = ui.div(c).row().gap(6).itemsCenter();
+            defer t.end();
+            ui.icon(c, "exclamationmark.triangle.fill", .{ .size = 12, .color = theme.danger });
+            ui.text(c, "The take didn't start", .{ .size = 12, .weight = .semibold, .color = theme.danger });
+        }
         ui.text(c, a.recorder.failure, .{ .size = 11.5, .color = theme.danger, .wrap = true });
     }
 }
 
-fn access(c: *ui.Context, a: *App) void {
-    const k = card(c).w(320);
+fn access(c: *ui.Context, a: *App, wide: bool) void {
+    const k = if (wide) card(c).w(access_w) else card(c).wFull();
     defer k.end();
     eyebrow(c, "BEFORE YOU ROLL");
     ui.text(c, "Screen access", .{ .size = 13, .weight = .semibold });
@@ -154,10 +172,10 @@ fn access(c: *ui.Context, a: *App) void {
         return;
     }
     ui.text(c, "Allow nanostudio in System Settings, Privacy & Security, Screen & System Audio Recording, then check again. macOS may ask you to reopen the app.", .{ .size = 12, .color = theme.muted, .wrap = true });
-    const r = ui.div(c).row().gap(8);
+    const r = ui.div(c).row().gap(6);
     defer r.end();
     if (ui.button(c, "Allow Screen Access…", .{ .size = 12 }).clicked) a.requestAccess();
-    if (ui.button(c, "Check Access Again", .{ .variant = .ghost, .size = 12 }).clicked) a.reload();
+    if (ui.button(c, "Check Again", .{ .variant = .ghost, .size = 12 }).clicked) a.reload();
 }
 
 fn after(c: *ui.Context) void {
