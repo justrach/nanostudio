@@ -11,6 +11,7 @@ const canvas = @import("canvas.zig");
 const Project = @import("project.zig").Project;
 const Player = @import("player.zig").Player;
 const Export = @import("export.zig").Export;
+const bar = @import("view_bar.zig");
 
 extern "c" fn time(t: ?*i64) i64;
 
@@ -54,7 +55,12 @@ pub const App = struct {
     screen_access: bool = false,
     nanoapp: ?*nanoui.App = null,
     window: ?*nanoui.Window = null,
-    tray: ?*nanoui.Tray = null,
+    /// The capture bar's window, and what it records.
+    bar: ?*nanoui.Window = null,
+    bar_mode: enum { display, window } = .display,
+    bar_window: ?u32 = null,
+    /// When recording started (host time), for the bar's clock.
+    rec_started: f64 = 0,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, home: []const u8) !App {
         var buf: [1024]u8 = undefined;
@@ -75,7 +81,6 @@ pub const App = struct {
         a.closeProject();
         if (a.exporting) |e| e.deinit();
         if (a.exported) |p| a.gpa.free(p);
-        if (a.tray) |t| t.destroy();
         a.freeThumbs();
         for (a.wall_thumbs) |w| if (w) |pic| a.gpa.free(pic.bgra);
         a.recorder.deinit();
@@ -158,50 +163,113 @@ pub const App = struct {
         nanoui.shell.showInFolder(path);
     }
 
-    /// Starts recording the chosen display into a new folder of the library.
+    /// Shows the capture bar (the main window steps aside), as Screen
+    /// Studio's: Display or Window, then Record.
+    pub fn openBar(a: *App) void {
+        a.recorder.changed = .{ .ctx = a, .func = recorderChanged };
+        if (a.bar == null) {
+            const app = a.nanoapp orelse return;
+            a.bar = app.newWindow(.{
+                .title = "nanostudio capture",
+                .width = bar.width,
+                .height = bar.height,
+                .min_width = bar.width,
+                .min_height = bar.height,
+                .resizable = false,
+                .title_bar = .hidden,
+                .always_on_top = true,
+                .theme = @import("theme.zig").ui(),
+                .content = .{ .view = .init(a, bar.view) },
+            }) catch return;
+            // No traffic lights on the bar; it moves by its background.
+            const objc = nanoui.objc;
+            for (0..3) |k| if (objc.msg(?objc.Object, a.bar.?.nswindow, "standardWindowButton:", .{@as(objc.NSInteger, @intCast(k))})) |b| objc.msg(void, b, "setHidden:", .{true});
+            objc.msg(void, a.bar.?.nswindow, "setMovableByWindowBackground:", .{true});
+        }
+        a.sizeBar();
+        if (a.bar) |b| b.focus();
+        if (a.window) |w| w.hide();
+        if (a.bar_mode == .window) a.recorder.listWindows();
+    }
+
+    /// Puts the bar away; the main window comes back.
+    pub fn closeBar(a: *App) void {
+        if (a.recorder.state == .recording or a.recorder.state == .saving) return;
+        if (a.bar) |b| b.hide();
+        if (a.window) |w| w.focus();
+    }
+
+    fn sizeBar(a: *App) void {
+        const b = a.bar orelse return;
+        const h = if (a.bar_mode == .window and a.recorder.state != .recording) bar.height + bar.list_height else bar.height;
+        b.setSize(bar.width, h);
+        // Near the top of the main screen, centered.
+        if (a.display_count > 0) {
+            const d = a.displays[0];
+            b.setPosition((d.width - bar.width) / 2, 72);
+        }
+    }
+
+    pub fn setBarMode(a: *App, mode: @TypeOf(a.bar_mode)) void {
+        a.bar_mode = mode;
+        if (mode == .window) a.recorder.listWindows();
+        a.sizeBar();
+        a.redraw();
+    }
+
+    /// The window chosen in the bar, if it's still listed.
+    pub fn barWindow(a: *App) ?capture.WindowInfo {
+        const id = a.bar_window orelse return null;
+        for (a.recorder.windows.items) |w| if (w.id == id) return w;
+        return null;
+    }
+
+    /// Starts recording what the bar chose into a new folder of the library.
     pub fn record(a: *App) void {
-        if (a.display_count == 0) return;
+        const source: capture.Source = switch (a.bar_mode) {
+            .display => if (a.display_count > 0) .{ .display = a.displays[a.display] } else return,
+            .window => if (a.barWindow()) |w| .{ .window = w.id } else return,
+        };
         var buf: [1100]u8 = undefined;
         const now = time(null);
         const dir = std.fmt.bufPrint(&buf, "{s}/recording-{d}", .{ a.library_dir, now }) catch return;
         std.Io.Dir.cwd().createDirPath(a.io, dir) catch return;
         a.recorder.changed = .{ .ctx = a, .func = recorderChanged };
-        a.recorder.start(dir, a.displays[a.display]);
+        a.recorder.start(dir, source);
+        a.redrawAll();
+    }
+
+    fn redrawAll(a: *App) void {
+        a.redraw();
+        if (a.bar) |b| b.redraw();
     }
 
     fn recorderChanged(ctx: *anyopaque) void {
         const a: *App = @ptrCast(@alignCast(ctx));
         switch (a.recorder.state) {
             .recording => {
-                // The window steps aside; the menu bar stops it.
-                if (a.window) |w| w.hide();
-                a.tray = nanoui.Tray.create(a.gpa, "nanostudio", .{ .symbol = "record.circle", .title = " Stop", .tooltip = "Stop recording", .menu = &.{
-                    .{ .label = "Stop Recording", .click = .of(a, stopFromMenu) },
-                } }) catch null;
+                a.rec_started = @import("av.zig").CACurrentMediaTime();
+                a.sizeBar();
+                nanoui.App.after(1000, a, tick);
             },
-            .idle => {
-                // Saved: open it.
-                a.removeTray();
+            .idle => if (a.recorder.pending == .start) {
+                // Saved: the bar goes, the take opens in the editor.
+                if (a.bar) |b| b.hide();
                 a.reload();
-                if (a.window) |w| w.show();
+                if (a.window) |w| w.focus();
                 a.open(a.recorder.dir);
-            },
-            .failed => {
-                a.removeTray();
-                if (a.window) |w| w.show();
             },
             else => {},
         }
-        a.redraw();
+        a.redrawAll();
     }
 
-    fn removeTray(a: *App) void {
-        if (a.tray) |t| t.destroy();
-        a.tray = null;
-    }
-
-    fn stopFromMenu(a: *App, _: *nanoui.menu.Item) void {
-        a.recorder.stop();
+    /// The bar's clock, a second at a time while recording.
+    fn tick(ctx: ?*anyopaque) callconv(.c) void {
+        const a: *App = @ptrCast(@alignCast(ctx));
+        if (a.recorder.state != .recording) return;
+        if (a.bar) |b| b.redraw();
+        nanoui.App.after(1000, a, tick);
     }
 
     pub fn requestAccess(a: *App) void {

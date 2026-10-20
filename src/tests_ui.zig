@@ -74,3 +74,31 @@ test "the library, the editor, a split and an export, through the views" {
     t.settle(0.2);
     try std.testing.expect(a.project == null and t.hasText("Ready when you are."));
 }
+
+test "the capture bar: Display or Window; a window picked from the list" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const home = "/tmp/nanostudio-test-bar";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    theme.apply(false);
+    var a = try App.init(gpa, io, home);
+    defer a.deinit();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&a, @import("view_bar.zig").view), .{ .width = 660, .height = 376, .theme = theme.ui() });
+    defer t.deinit();
+    t.settle(0.1);
+    try std.testing.expect(t.hasText("Display") and t.hasText("Window") and t.hasText("Record"));
+    try t.screenshot("/tmp/nanostudio-bar.png");
+    // Windows as ScreenCaptureKit would list them (no capture here).
+    for ([_][2][]const u8{ .{ "Safari", "nanoui on GitHub" }, .{ "Zed", "capture.zig" } }, 0..) |w, i| {
+        try a.recorder.windows.append(gpa, .{ .id = @intCast(100 + i), .app = try gpa.dupe(u8, w[0]), .title = try gpa.dupe(u8, w[1]), .width = 1200, .height = 800 });
+    }
+    a.bar_mode = .window;
+    t.settle(0.1);
+    try std.testing.expect(t.hasText("Pick a window below") and t.hasText("capture.zig"));
+    try t.clickText("capture.zig");
+    t.settle(0.1);
+    try std.testing.expectEqual(@as(?u32, 101), a.bar_window);
+    try std.testing.expectEqualStrings("Zed", a.barWindow().?.app);
+    try t.screenshot("/tmp/nanostudio-bar-window.png");
+}

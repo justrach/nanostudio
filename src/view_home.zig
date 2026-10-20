@@ -47,7 +47,8 @@ fn sidebar(c: *ui.Context, a: *App) void {
     const side = ui.div(c).column().w(272).hFull().bg(theme.panel).border(theme.border);
     defer side.end();
     {
-        const h = ui.div(c).row().wFull().h(52).px(16).itemsCenter().gap(8);
+        // Room for the window's traffic lights on the left.
+        const h = ui.div(c).row().wFull().h(52).pl(84).pr(16).itemsCenter().gap(8);
         defer h.end();
         ui.icon(c, "film.stack", .{ .size = 14, .color = theme.muted });
         ui.text(c, "Library", .{ .size = 13, .weight = .semibold });
@@ -132,8 +133,11 @@ fn setup(c: *ui.Context, a: *App) void {
     const f = ui.div(c).row().wFull().gap(10).itemsCenter().pt(4);
     defer f.end();
     const busy = a.recorder.state == .starting or a.recorder.state == .saving;
-    if (ui.button(c, if (busy) "Starting…" else "Start recording", .{ .variant = .primary, .size = 13, .icon = "record.circle" }).clicked and !busy) a.record();
-    ui.text(c, "Stop from the menu bar.", .{ .size = 11.5, .color = theme.faint });
+    if (ui.button(c, if (busy) "Starting…" else "Start recording", .{ .variant = .primary, .size = 13, .icon = "record.circle" }).clicked and !busy) {
+        a.bar_mode = .display;
+        a.openBar();
+    }
+    ui.text(c, "A capture bar opens: record a display or a window, and stop from it.", .{ .size = 11.5, .color = theme.faint });
     if (a.recorder.state == .failed) {
         ui.spacer(c);
         ui.text(c, a.recorder.failure, .{ .size = 11.5, .color = theme.danger, .wrap = true });

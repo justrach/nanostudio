@@ -14,6 +14,7 @@ extern "c" fn CGPreflightScreenCaptureAccess() bool;
 extern "c" fn CGRequestScreenCaptureAccess() bool;
 extern "c" fn CGMainDisplayID() u32;
 extern "c" fn dispatch_queue_create(label: [*:0]const u8, attr: ?*anyopaque) ?*anyopaque;
+extern "c" fn getpid() c_int;
 extern "c" const SCStreamFrameInfoStatus: av.Object;
 
 /// Whether this app may record the screen (no prompt).
@@ -56,14 +57,24 @@ pub fn displays(buf: []Display) []Display {
 
 pub const State = enum { idle, starting, recording, saving, failed };
 
+/// What to record: a display, or one window (its id).
+pub const Source = union(enum) { display: Display, window: u32 };
+
+/// A window that can be recorded, as the capture bar lists them.
+pub const WindowInfo = struct { id: u32, app: []const u8, title: []const u8, width: f64, height: f64 };
+
 pub const Recorder = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     state: State = .idle,
     failure: []const u8 = "",
     dir: []const u8 = "",
-    display: Display = undefined,
-    /// The display's frame in global coordinates (top-left origin), for the cursor.
+    source: Source = undefined,
+    /// The windows that can be recorded (`listWindows`), their names owned.
+    windows: std.ArrayList(WindowInfo) = .empty,
+    /// What the shareable content was asked for.
+    pending: enum { start, list } = .start,
+    /// What's recorded's frame in global coordinates (top-left origin), for the cursor.
     frame: av.CGRect = undefined,
     primary_height: f64 = 0,
     stream: ?av.Object = null,
@@ -79,6 +90,8 @@ pub const Recorder = struct {
     changed: ?struct { ctx: *anyopaque, func: *const fn (*anyopaque) void } = null,
 
     pub fn deinit(r: *Recorder) void {
+        r.clearWindows();
+        r.windows.deinit(r.gpa);
         r.cursor.deinit(r.gpa);
         if (r.dir.len > 0) r.gpa.free(r.dir);
     }
@@ -93,12 +106,54 @@ pub const Recorder = struct {
         r.notify();
     }
 
-    /// Starts recording `display` into the new folder `dir`.
-    pub fn start(r: *Recorder, dir: []const u8, display: Display) void {
+    fn clearWindows(r: *Recorder) void {
+        for (r.windows.items) |w| {
+            r.gpa.free(w.app);
+            r.gpa.free(w.title);
+        }
+        r.windows.clearRetainingCapacity();
+    }
+
+    /// Lists the windows that can be recorded; `changed` when they're in.
+    pub fn listWindows(r: *Recorder) void {
+        if (r.state == .starting or r.state == .recording or !screenAccess()) return;
+        r.pending = .list;
+        var block = objc.Block(Recorder, &.{ ?av.Object, ?av.Object }).init(r, gotContent);
+        objc.msg(void, objc.class("SCShareableContent"), "getShareableContentWithCompletionHandler:", .{@as(*anyopaque, @ptrCast(&block))});
+    }
+
+    fn listed(r: *Recorder, content: av.Object) void {
+        r.clearWindows();
+        const me = getpid();
+        const list = objc.msg(av.Object, content, "windows", .{});
+        for (0..objc.msg(objc.NSUInteger, list, "count", .{})) |i| {
+            const w = objc.msg(av.Object, list, "objectAtIndex:", .{@as(objc.NSUInteger, i)});
+            const app = objc.msg(?av.Object, w, "owningApplication", .{}) orelse continue;
+            const f = objc.msg(av.CGRect, w, "frame", .{});
+            if (objc.msg(objc.NSInteger, w, "windowLayer", .{}) != 0 or !objc.msg(bool, w, "isOnScreen", .{})) continue;
+            if (objc.msg(c_int, app, "processID", .{}) == me or f.size.width < 120 or f.size.height < 80) continue;
+            const name = r.gpa.dupe(u8, objc.fromNSString(objc.msg(?av.Object, app, "applicationName", .{}))) catch continue;
+            const title = r.gpa.dupe(u8, objc.fromNSString(objc.msg(?av.Object, w, "title", .{}))) catch {
+                r.gpa.free(name);
+                continue;
+            };
+            r.windows.append(r.gpa, .{ .id = objc.msg(u32, w, "windowID", .{}), .app = name, .title = title, .width = f.size.width, .height = f.size.height }) catch {};
+        }
+        std.mem.sort(WindowInfo, r.windows.items, {}, struct {
+            fn lt(_: void, a: WindowInfo, b: WindowInfo) bool {
+                return std.ascii.lessThanIgnoreCase(a.app, b.app);
+            }
+        }.lt);
+        r.notify();
+    }
+
+    /// Starts recording `source` into the new folder `dir`.
+    pub fn start(r: *Recorder, dir: []const u8, source: Source) void {
         if (r.state == .starting or r.state == .recording) return;
         if (r.dir.len > 0) r.gpa.free(r.dir);
         r.dir = r.gpa.dupe(u8, dir) catch return;
-        r.display = display;
+        r.source = source;
+        r.pending = .start;
         r.cursor.clearRetainingCapacity();
         r.first = null;
         r.state = .starting;
@@ -113,6 +168,13 @@ pub const Recorder = struct {
         objc.dispatchMain(r, struct {
             fn f(ctx: ?*anyopaque) callconv(.c) void {
                 const self: *Recorder = @ptrCast(@alignCast(ctx));
+                if (self.pending == .list) {
+                    const c = self.content orelse return;
+                    self.content = null;
+                    self.listed(c);
+                    objc.release(c);
+                    return;
+                }
                 self.begin();
             }
         }.f);
@@ -127,19 +189,40 @@ pub const Recorder = struct {
             objc.release(content);
             r.content = null;
         }
-        const list = objc.msg(av.Object, content, "displays", .{});
-        var sc_display: ?av.Object = null;
-        for (0..objc.msg(objc.NSUInteger, list, "count", .{})) |i| {
-            const d = objc.msg(av.Object, list, "objectAtIndex:", .{@as(objc.NSUInteger, i)});
-            if (objc.msg(u32, d, "displayID", .{}) == r.display.id) sc_display = d;
-        }
-        const d = sc_display orelse return r.fail("That display isn't there any more.");
-        r.frame = objc.msg(av.CGRect, d, "frame", .{});
         const main_screen = objc.msg(av.Object, objc.msg(av.Object, objc.class("NSScreen"), "screens", .{}), "objectAtIndex:", .{@as(objc.NSUInteger, 0)});
         r.primary_height = objc.msg(av.CGRect, main_screen, "frame", .{}).size.height;
+        var scale: f64 = objc.msg(f64, main_screen, "backingScaleFactor", .{});
+        const filter = switch (r.source) {
+            .display => |want| blk: {
+                const d = find(content, "displays", "displayID", want.id) orelse return r.fail("That display isn't there any more.");
+                r.frame = objc.msg(av.CGRect, d, "frame", .{});
+                scale = want.scale;
+                // nanostudio's own windows (the capture bar) stay out of it.
+                const me = getpid();
+                var mine: [1]av.Object = undefined;
+                var n: usize = 0;
+                const apps = objc.msg(av.Object, content, "applications", .{});
+                for (0..objc.msg(objc.NSUInteger, apps, "count", .{})) |i| {
+                    const app = objc.msg(av.Object, apps, "objectAtIndex:", .{@as(objc.NSUInteger, i)});
+                    if (objc.msg(c_int, app, "processID", .{}) == me) {
+                        mine[0] = app;
+                        n = 1;
+                        break;
+                    }
+                }
+                const excluded = objc.msg(av.Object, objc.class("NSArray"), "arrayWithObjects:count:", .{ @as(*const anyopaque, @ptrCast(&mine)), @as(objc.NSUInteger, n) });
+                break :blk objc.msg(av.Object, objc.alloc("SCContentFilter"), "initWithDisplay:excludingApplications:exceptingWindows:", .{ d, excluded, objc.msg(av.Object, objc.class("NSArray"), "array", .{}) });
+            },
+            .window => |id| blk: {
+                const w = find(content, "windows", "windowID", id) orelse return r.fail("That window isn't there any more.");
+                r.frame = objc.msg(av.CGRect, w, "frame", .{});
+                break :blk objc.msg(av.Object, objc.alloc("SCContentFilter"), "initWithDesktopIndependentWindow:", .{w});
+            },
+        };
+        defer objc.release(filter);
         // Pixels, even for the encoder, at most 3840 wide.
-        var w = r.display.width * r.display.scale;
-        var h = r.display.height * r.display.scale;
+        var w = r.frame.size.width * scale;
+        var h = r.frame.size.height * scale;
         if (w > 3840) {
             h = h * 3840 / w;
             w = 3840;
@@ -150,8 +233,6 @@ pub const Recorder = struct {
         defer r.gpa.free(video);
         r.writer = writer.Writer.create(video, .{ .width = pw, .height = ph, .fps = 60, .codec = .hevc, .realtime = true, .bitrate = 40_000_000 }) catch return r.fail("The video encoder could not start.");
 
-        const filter = objc.msg(av.Object, objc.alloc("SCContentFilter"), "initWithDisplay:excludingWindows:", .{ d, objc.msg(av.Object, objc.class("NSArray"), "array", .{}) });
-        defer objc.release(filter);
         const config = objc.new("SCStreamConfiguration");
         defer objc.release(config);
         objc.msg(void, config, "setWidth:", .{@as(objc.NSUInteger, pw)});
@@ -177,6 +258,16 @@ pub const Recorder = struct {
         const mask: u64 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
         var mblock = objc.Block(Recorder, &.{av.Object}).init(r, onEvent);
         r.monitor = objc.retain(objc.msg(av.Object, objc.class("NSEvent"), "addGlobalMonitorForEventsMatchingMask:handler:", .{ mask, @as(*anyopaque, @ptrCast(&mblock)) }));
+    }
+
+    /// The item of `content`'s `list` whose `key` is `id`.
+    fn find(content: av.Object, comptime list_name: [:0]const u8, comptime key: [:0]const u8, id: u32) ?av.Object {
+        const list = objc.msg(av.Object, content, list_name, .{});
+        for (0..objc.msg(objc.NSUInteger, list, "count", .{})) |i| {
+            const item = objc.msg(av.Object, list, "objectAtIndex:", .{@as(objc.NSUInteger, i)});
+            if (objc.msg(u32, item, key, .{}) == id) return item;
+        }
+        return null;
     }
 
     fn started(r: *Recorder, err: ?av.Object) void {
@@ -280,7 +371,7 @@ pub const Recorder = struct {
             .height = @intCast(w.height),
             .fps = 60,
             .duration = @max(0.1, r.last - first),
-            .points_width = @floatCast(r.display.width),
+            .points_width = @floatCast(r.frame.size.width),
             .cursor = samples.items,
         };
         rec.save(r.gpa, r.io, r.dir, recording) catch return r.fail("recording.json could not be written.");

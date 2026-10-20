@@ -51,7 +51,8 @@ fn keys(c: *ui.Context, a: *App) void {
 
 fn topbar(c: *ui.Context, a: *App) void {
     const p = a.project.?;
-    const bar = ui.div(c).row().wFull().h(52).px(14).gap(8).itemsCenter().bg(theme.panel).border(theme.border);
+    // Room for the window's traffic lights on the left.
+    const bar = ui.div(c).row().wFull().h(52).pl(84).pr(14).gap(8).itemsCenter().bg(theme.panel).border(theme.border);
     defer bar.end();
     if (ui.button(c, "Library", .{ .variant = .ghost, .size = 12.5, .icon = "chevron.left" }).clicked) {
         a.closeProject();
