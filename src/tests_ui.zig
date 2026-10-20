@@ -148,7 +148,8 @@ test "a take that couldn't start says why across the card, in a narrow window to
     defer a.deinit();
     a.screen_access = false;
     a.recorder.state = .failed;
-    a.recorder.failure = "Screen Recording is off for nanostudio: allow it in System Settings, Privacy & Security, Screen & System Audio Recording.";
+    a.recorder.failure = @import("capture.zig").no_access;
+    a.recorder.needs_relaunch = true;
     var t: ui.Tester = undefined;
     try t.init(gpa, .init(&a, view.view), .{ .width = 900, .height = 760, .theme = theme.ui() });
     defer t.deinit();
@@ -159,4 +160,14 @@ test "a take that couldn't start says why across the card, in a narrow window to
     try std.testing.expect(why.w > 200 and why.h < 80);
     const again = t.findText("Check Again") orelse return error.NoButton;
     try std.testing.expect(again.x + again.w <= 900);
+    // A permission just given takes a relaunch: the way to one is there.
+    try std.testing.expect(t.hasText("Quit & Reopen"));
+
+    // The capture bar says the same, with Quit & Reopen for Record.
+    var b: ui.Tester = undefined;
+    try b.init(gpa, .init(&a, @import("view_bar.zig").view), .{ .width = 800, .height = 76, .theme = theme.ui() });
+    defer b.deinit();
+    b.settle(0.1);
+    try b.screenshot("/tmp/nanostudio-bar-relaunch.png");
+    try std.testing.expect(b.hasText("Quit & Reopen") and !b.hasText("Record"));
 }

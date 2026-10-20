@@ -291,6 +291,8 @@ pub const App = struct {
         const a: *App = @ptrCast(@alignCast(ctx));
         switch (a.recorder.state) {
             .recording => {
+                // Recording is the proof: the preflight's answer can be stale.
+                a.screen_access = true;
                 a.rec_started = @import("av.zig").CACurrentMediaTime();
                 a.sizeBar();
                 nanoui.App.after(1000, a, tick);
@@ -313,6 +315,24 @@ pub const App = struct {
         if (a.recorder.state != .recording) return;
         if (a.bar) |b| b.redraw();
         nanoui.App.after(1000, a, tick);
+    }
+
+    /// Quits and opens nanostudio again (macOS applies a Screen Recording
+    /// permission only to a fresh launch). From a bundle; else it just quits.
+    pub fn relaunch(a: *App) void {
+        const objc = nanoui.objc;
+        const pool = objc.Pool.push();
+        defer pool.pop();
+        const bundle = objc.fromNSString(objc.msg(?objc.Object, objc.msg(objc.Object, objc.class("NSBundle"), "mainBundle", .{}), "bundlePath", .{}));
+        if (std.mem.endsWith(u8, bundle, ".app")) {
+            // A shell outlives us by a second, then opens the app anew.
+            var buf: [1200]u8 = undefined;
+            const script = std.fmt.bufPrint(&buf, "sleep 1; /usr/bin/open -n \"$0\"", .{}) catch return;
+            const args = [_]objc.Object{ objc.nsString("-c"), objc.nsString(script), objc.nsString(bundle) };
+            const list = objc.msg(objc.Object, objc.class("NSArray"), "arrayWithObjects:count:", .{ @as(*const anyopaque, @ptrCast(&args)), @as(objc.NSUInteger, args.len) });
+            _ = objc.msg(?objc.Object, objc.class("NSTask"), "launchedTaskWithLaunchPath:arguments:", .{ objc.nsString("/bin/sh"), list });
+        }
+        if (a.nanoapp) |app| app.quit();
     }
 
     pub fn requestAccess(a: *App) void {

@@ -75,7 +75,15 @@ fn choosing(c: *ui.Context, a: *App) void {
                     ui.text(c, if (w.title.len > 0) w.title else "Untitled window", .{ .size = 11, .color = theme.muted });
                 } else ui.text(c, "Pick a window below", .{ .size = 12.5, .color = theme.muted }),
             }
-            if (a.recorder.state == .failed) ui.text(c, a.recorder.failure, .{ .size = 11, .color = theme.danger, .wrap = true });
+            if (a.recorder.state == .failed) ui.text(c, if (a.recorder.needs_relaunch) "Allow Screen Recording in System Settings, then reopen nanostudio: macOS applies it only then." else a.recorder.failure, .{ .size = 11, .color = theme.danger, .wrap = true });
+        }
+        if (a.recorder.state == .failed and a.recorder.needs_relaunch) {
+            const re = ui.div(c).row().gap(8).itemsCenter().px(16).py(10).roundedFull().bg(theme.accent).control();
+            defer re.end();
+            if (re.clicked()) a.relaunch();
+            ui.icon(c, "arrow.clockwise", .{ .size = 12, .weight = .bold, .color = .{ .r = 1, .g = 1, .b = 1 } });
+            ui.text(c, "Quit & Reopen", .{ .size = 13, .weight = .semibold, .color = .{ .r = 1, .g = 1, .b = 1 } });
+            return;
         }
         const ready = a.bar_mode == .display or a.barWindow() != null;
         const starting = a.recorder.state == .starting;

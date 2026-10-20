@@ -84,6 +84,9 @@ pub fn displays(buf: []Display) []Display {
     return buf[0..k];
 }
 
+/// Why recording can't start when macOS won't share the screen.
+pub const no_access = "macOS isn't letting nanostudio record the screen. Allow it in System Settings, Privacy & Security, Screen & System Audio Recording. If it's already on there, quit and reopen nanostudio: macOS only applies it then.";
+
 pub const State = enum { idle, starting, recording, saving, failed };
 
 /// What to record: a display, or one window (its id).
@@ -126,6 +129,10 @@ pub const Recorder = struct {
     /// Called on the main thread when recording starts, fails, or is saved.
     changed: ?struct { ctx: *anyopaque, func: *const fn (*anyopaque) void } = null,
 
+    /// Recording failed for want of the permission: macOS applies a
+    /// permission given only once nanostudio is reopened.
+    needs_relaunch: bool = false,
+
     pub fn deinit(r: *Recorder) void {
         r.clearWindows();
         r.windows.deinit(r.gpa);
@@ -153,7 +160,7 @@ pub const Recorder = struct {
 
     /// Lists the windows that can be recorded; `changed` when they're in.
     pub fn listWindows(r: *Recorder) void {
-        if (r.state == .starting or r.state == .recording or !screenAccess()) return;
+        if (r.state == .starting or r.state == .recording) return;
         r.pending = .list;
         var block = objc.Block(Recorder, &.{ ?av.Object, ?av.Object }).init(r, gotContent);
         objc.msg(void, objc.class("SCShareableContent"), "getShareableContentWithCompletionHandler:", .{@as(*anyopaque, @ptrCast(&block))});
@@ -194,7 +201,10 @@ pub const Recorder = struct {
         r.cursor.clearRetainingCapacity();
         r.first = null;
         r.state = .starting;
-        if (!screenAccess()) return r.fail("Screen Recording is off for nanostudio: allow it in System Settings, Privacy & Security, Screen & System Audio Recording.");
+        // Not CGPreflightScreenCaptureAccess: its answer holds until the app
+        // restarts, so a permission just given would still read as off.
+        // ScreenCaptureKit is asked, and says.
+        r.needs_relaunch = false;
         var block = objc.Block(Recorder, &.{ ?av.Object, ?av.Object }).init(r, gotContent);
         objc.msg(void, objc.class("SCShareableContent"), "getShareableContentWithCompletionHandler:", .{@as(*anyopaque, @ptrCast(&block))});
     }
@@ -221,7 +231,10 @@ pub const Recorder = struct {
     fn begin(r: *Recorder) void {
         const pool = objc.Pool.push();
         defer pool.pop();
-        const content = r.content orelse return r.fail("macOS gave no screens to record (is Screen Recording allowed?).");
+        const content = r.content orelse {
+            r.needs_relaunch = true;
+            return r.fail(no_access);
+        };
         defer {
             objc.release(content);
             r.content = null;

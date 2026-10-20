@@ -159,6 +159,11 @@ fn setup(c: *ui.Context, a: *App, width: ?f32) void {
             ui.text(c, "The take didn't start", .{ .size = 12, .weight = .semibold, .color = theme.danger });
         }
         ui.text(c, a.recorder.failure, .{ .size = 11.5, .color = theme.danger, .wrap = true });
+        if (a.recorder.needs_relaunch) {
+            const r = ui.div(c).row().pt(4);
+            defer r.end();
+            if (ui.button(c, "Quit & Reopen", .{ .size = 12, .icon = "arrow.clockwise" }).clicked) a.relaunch();
+        }
     }
 }
 
