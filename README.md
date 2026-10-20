@@ -20,6 +20,10 @@ Record a display or a window. nanostudio logs your cursor and clicks as you go, 
 
 Requires macOS 13 or later on Apple silicon.
 
+## Download
+
+[Download nanostudio](https://github.com/justrach/nanostudio/releases/latest/download/nanostudio-macos-arm64.dmg) (signed and notarized), open the disk image, and drag nanostudio to Applications. Each [release](https://github.com/justrach/nanostudio/releases) lists the image's SHA-256.
+
 ## Build
 
 ```sh
