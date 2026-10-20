@@ -208,7 +208,9 @@ fn zooms(c: *ui.Context, a: *App, W: f32, dur: f64) void {
         const x = @as(f32, @floatCast(o0 / dur)) * W;
         const w = @max(4, @as(f32, @floatCast((o1 - o0) / dur)) * W);
         const on = p.selection == .zoom and p.selection.zoom == i;
-        const seg = ui.div(c).absolute().offset(x, 2).w(w).h(22).rounded(6).bg(if (on) theme.zoom.mix(theme.text, 0.25) else theme.zoom).px(6).itemsCenter().control();
+        // A new zoom pops in.
+        const f = ui.motion.frame(c, .{ .initial = .{ .scale = 0.8, .opacity = 0 }, .transition = .{ .spring = ui.motion.Spring.bouncy } });
+        const seg = ui.div(c).absolute().offset(x, 2).w(w).h(22).rounded(6).bg(if (on) theme.zoom.mix(theme.text, 0.25) else theme.zoom).px(6).itemsCenter().control().motion(f);
         defer seg.end();
         if (seg.clicked()) p.selection = .{ .zoom = i };
         if (w > 50) ui.text(c, c.print("{d:.1}×", .{z.scale}), .{ .size = 10.5, .weight = .medium, .color = theme.text });

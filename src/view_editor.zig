@@ -4,6 +4,8 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
+const kit = nanoui.kit;
+const motion = ui.motion;
 const theme = @import("theme.zig");
 const av = @import("av.zig");
 const canvas = @import("canvas.zig");
@@ -32,19 +34,12 @@ pub fn view(c: *ui.Context, a: *App) void {
     presets(c, a);
 }
 
-/// The Presets menu, over everything, under its button.
+/// The Presets menu under its button: it springs open, and Escape or a
+/// click elsewhere closes it.
 fn presets(c: *ui.Context, a: *App) void {
-    if (!a.presets_open) return;
-    const at = a.presets_anchor;
-    const menu = ui.div(c).absolute().offset(at.x, at.y + at.h + 6).w(220).column().p(6).gap(2).rounded(12).bg(theme.panel).border(theme.border).shadowLg();
-    defer menu.end();
-    for (style_mod.presets, 0..) |pr, i| {
-        ui.key(c, c.print("preset-{d}", .{i}));
-        const row = ui.div(c).row().wFull().px(10).py(8).rounded(8).hover(theme.hover).control();
-        defer row.end();
-        if (row.clicked()) a.applyPreset(i);
-        ui.text(c, pr.name, .{ .size = 12.5 });
-    }
+    var items: [style_mod.presets.len]kit.MenuItem = undefined;
+    for (style_mod.presets, 0..) |pr, i| items[i] = .{ .label = pr.name, .icon = "sparkles" };
+    if (kit.menu(c, "presets", &a.presets_open, a.presets_anchor, &items, .{ .placement = .bottom_end, .width = 220 })) |i| a.applyPreset(i);
 }
 
 /// Space plays, ⌘Z undoes, ⇧⌘Z redoes, S splits, ⌫ removes the selection,
@@ -82,7 +77,7 @@ fn topbar(c: *ui.Context, a: *App) void {
         const pb = ui.div(c).row().gap(6).itemsCenter().px(10).py(6).rounded(8).hover(theme.hover).control();
         defer pb.end();
         if (pb.clicked()) a.presets_open = !a.presets_open;
-        if (pb.interaction().rect) |r| a.presets_anchor = r;
+        a.presets_anchor = pb.interaction().rect;
         ui.icon(c, "sparkles", .{ .size = 13, .color = theme.muted });
         ui.text(c, "Presets", .{ .size = 12.5 });
         ui.icon(c, "chevron.down", .{ .size = 9, .color = theme.muted });
@@ -90,11 +85,17 @@ fn topbar(c: *ui.Context, a: *App) void {
     if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "arrow.uturn.backward" }).clicked) p.undo();
     if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "arrow.uturn.forward" }).clicked) p.redo();
     if (a.exporting) |e| {
-        ui.text(c, c.print("Exporting… {d:.0}%", .{e.progress() * 100}), .{ .size = 12, .color = theme.muted });
-        ui.progress(c, e.progress(), .{ .px = 120 });
+        // The figure and the bar ease between the batches of frames.
+        const shown = motion.number(c, "export", e.progress(), .{ .tween = .{ .duration = 0.25, .ease = .linear } });
+        ui.text(c, c.print("Exporting… {d:.0}%", .{shown * 100}), .{ .size = 12, .color = theme.muted });
+        ui.progress(c, shown, .{ .px = 120 });
     } else {
         if (a.export_failed) |why| ui.text(c, why, .{ .size = 12, .color = theme.danger });
-        if (a.exported != null and a.export_failed == null) {
+        // Finished: it slides in beside Export.
+        if (motion.present(c, "export-done", a.exported != null and a.export_failed == null, .{ .initial = .{ .x = 12, .opacity = 0 }, .exit = .{ .opacity = 0 }, .transition = .{ .spring = motion.Spring.snappy } })) |f| {
+            const done = ui.div(c).row().gap(6).itemsCenter().motion(f);
+            defer done.end();
+            ui.icon(c, "checkmark.circle.fill", .{ .size = 13, .color = theme.success });
             ui.text(c, "Export finished", .{ .size = 12, .color = theme.success });
             if (ui.button(c, "Show in Finder", .{ .variant = .ghost, .size = 12 }).clicked) a.showExport();
         }
@@ -120,6 +121,10 @@ fn preview(c: *ui.Context, a: *App) void {
     const wh = fit(@max(64, r.w - 48), @max(36, r.h - 48), ratio);
     const src = p.timeline.toSource(pl.t);
     const m = p.motionNow().at(src);
+    // Opened: the canvas eases in.
+    const f = motion.frame(c, .{ .initial = .{ .scale = 0.97, .opacity = 0 }, .transition = .{ .spring = .{} } });
+    const holder = ui.div(c).motion(f);
+    defer holder.end();
     canvas.draw(c, &a.art, @floor(wh[0]), @floor(wh[1]), .{
         .screen = if (pl.frameAt(src)) |pb| av.texture(pb) else null,
         .src_w = p.info.width,

@@ -4,6 +4,7 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
+const motion = ui.motion;
 const theme = @import("theme.zig");
 const library = @import("library.zig");
 const App = @import("app.zig").App;
@@ -17,7 +18,9 @@ pub fn view(c: *ui.Context, a: *App) void {
     toolbar(c, a);
     const sc = ui.div(c).column().grow().wFull().scrollY().p(24);
     defer sc.end();
-    const body = ui.div(c).column().wFull().gap(16);
+    // The studio eases in.
+    const f = motion.frame(c, .{ .initial = .{ .y = 10, .opacity = 0 }, .transition = .{ .spring = motion.Spring.gentle } });
+    const body = ui.div(c).column().wFull().gap(16).motion(f);
     defer body.end();
     hero(c);
     {
@@ -70,9 +73,11 @@ fn sidebar(c: *ui.Context, a: *App) void {
         ui.text(c, "Your takes land here, and in ~/Movies/Shitty Screen Studio.", .{ .size = 11.5, .color = theme.faint, .wrap = true });
         return;
     }
-    for (a.entries) |*e| {
+    for (a.entries, 0..) |*e, i| {
         ui.key(c, e.dir);
-        const row = ui.div(c).row().wFull().gap(10).p(8).rounded(9).itemsCenter().hover(theme.hover).control();
+        // In one after another; a new take pushes the rest down smoothly.
+        const f = motion.frame(c, .{ .initial = .{ .x = -12, .opacity = 0 }, .delay = motion.stagger(@min(i, 10), 0.03), .layout = true, .transition = .{ .spring = .{} } });
+        const row = ui.div(c).row().wFull().gap(10).p(8).rounded(9).itemsCenter().hover(theme.hover).control().motion(f);
         defer row.end();
         if (row.clicked()) a.open(e.dir);
         thumb(c, a, e);

@@ -26,9 +26,12 @@ pub fn view(c: *ui.Context, a: *App) void {
         const tabs = ui.div(c).row().wFull().p(12);
         defer tabs.end();
         var sel: usize = @intFromEnum(a.panel);
-        if (ui.segmented(c, &.{ "Design", "Motion & Cursor" }, &sel)) a.panel = @enumFromInt(sel);
+        if (nanoui.kit.tabs(c, &.{ "Design", "Motion & Cursor" }, &sel, .{ .variant = .segmented, .size = .sm })) a.panel = @enumFromInt(sel);
     }
-    const body = ui.div(c).column().grow().wFull().scrollY().px(16).pb(16).gap(18);
+    // A panel switched to eases in (keyed by panel: each enters anew).
+    ui.key(c, @tagName(a.panel));
+    const f = ui.motion.frame(c, .{ .initial = .{ .y = 8, .opacity = 0 }, .transition = .{ .spring = ui.motion.Spring.snappy } });
+    const body = ui.div(c).column().grow().wFull().scrollY().px(16).pb(16).gap(18).motion(f);
     defer body.end();
     selection(c, a);
     switch (a.panel) {
@@ -139,7 +142,7 @@ fn design(c: *ui.Context, a: *App) void {
     section(c, "BACKGROUND");
     {
         var sel: usize = @intFromEnum(a.bg_tab);
-        if (ui.segmented(c, &.{ "Wallpaper", "Gradient", "Color", "Image" }, &sel)) a.bg_tab = @enumFromInt(sel);
+        if (nanoui.kit.tabs(c, &.{ "Wallpaper", "Gradient", "Color", "Image" }, &sel, .{ .variant = .segmented, .size = .sm })) a.bg_tab = @enumFromInt(sel);
     }
     switch (a.bg_tab) {
         .wallpaper => {

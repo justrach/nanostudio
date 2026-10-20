@@ -44,7 +44,7 @@ pub const App = struct {
     bg_tab: enum { wallpaper, gradient, color, image } = .wallpaper,
     /// The top bar's Presets menu is open.
     presets_open: bool = false,
-    presets_anchor: nanoui.ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    presets_anchor: ?nanoui.ui.Rect = null,
     drag: Drag = .none,
     /// A slider's drag under way: its changes are one undo.
     gesture: bool = false,

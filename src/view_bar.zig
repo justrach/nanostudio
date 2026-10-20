@@ -5,6 +5,7 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
+const motion = ui.motion;
 const theme = @import("theme.zig");
 const av = @import("av.zig");
 const capture = @import("capture.zig");
@@ -87,7 +88,8 @@ fn choosing(c: *ui.Context, a: *App) void {
         }
         const ready = a.bar_mode == .display or a.barWindow() != null;
         const starting = a.recorder.state == .starting;
-        const rec = ui.div(c).row().gap(8).itemsCenter().px(16).py(10).roundedFull().bg(if (ready and !starting) theme.danger else theme.danger.alpha(0.35)).control();
+        const press = motion.frame(c, .{ .press = .{ .scale = 0.94 }, .hover = .{ .scale = 1.03 }, .transition = .{ .spring = motion.Spring.bouncy } });
+        const rec = ui.div(c).row().gap(8).itemsCenter().px(16).py(10).roundedFull().bg(if (ready and !starting) theme.danger else theme.danger.alpha(0.35)).control().motion(press);
         defer rec.end();
         if (rec.clicked() and ready and !starting) a.record();
         _ = c.leaf(.{ .width = .{ .px = 10 }, .height = .{ .px = 10 }, .radius = 5, .background = .{ .r = 1, .g = 1, .b = 1 } }, .none, null);
@@ -105,7 +107,8 @@ fn choosing(c: *ui.Context, a: *App) void {
     for (a.recorder.windows.items, 0..) |w, i| {
         ui.key(c, c.print("win-{d}", .{w.id}));
         const on = a.bar_window == w.id;
-        const row = ui.div(c).row().wFull().gap(10).px(10).py(7).rounded(8).itemsCenter().bg(if (on) theme.selected else theme.background.alpha(0)).hover(theme.hover).control();
+        const f = motion.frame(c, .{ .initial = .{ .y = 6, .opacity = 0 }, .delay = motion.stagger(@min(i, 12), 0.025), .transition = .{ .spring = motion.Spring.snappy } });
+        const row = ui.div(c).row().wFull().gap(10).px(10).py(7).rounded(8).itemsCenter().bg(if (on) theme.selected else theme.background.alpha(0)).hover(theme.hover).control().motion(f);
         defer row.end();
         if (row.clicked()) a.bar_window = w.id;
         ui.icon(c, "macwindow", .{ .size = 13, .color = if (on) theme.accent else theme.muted });
@@ -113,14 +116,16 @@ fn choosing(c: *ui.Context, a: *App) void {
         ui.text(c, if (w.title.len > 0) w.title else "Untitled", .{ .size = 12, .color = theme.muted });
         ui.spacer(c);
         ui.text(c, c.print("{d}×{d}", .{ @as(u32, @intFromFloat(w.width)), @as(u32, @intFromFloat(w.height)) }), .{ .size = 11, .color = theme.faint, .mono = true });
-        _ = i;
     }
 }
 
 fn recording(c: *ui.Context, a: *App) void {
     const row = ui.div(c).row().wFull().h(@floatCast(height)).px(18).gap(12).itemsCenter();
     defer row.end();
-    _ = c.leaf(.{ .width = .{ .px = 12 }, .height = .{ .px = 12 }, .radius = 6, .background = theme.danger }, .none, null);
+    // The recording dot breathes.
+    const pulse = motion.keyframes(c, .{ .values = &.{ .{ .scale = 1, .opacity = 1 }, .{ .scale = 0.7, .opacity = 0.45 }, .{ .scale = 1, .opacity = 1 } }, .duration = 1.4, .repeat = null });
+    const dot = ui.div(c).w(12).h(12).roundedFull().bg(theme.danger).motion(pulse);
+    dot.end();
     const secs: u64 = @intFromFloat(@max(0, av.CACurrentMediaTime() - a.rec_started));
     ui.text(c, c.print("{d}:{d:0>2}", .{ secs / 60, secs % 60 }), .{ .size = 16, .weight = .semibold, .mono = true });
     ui.text(c, if (a.recorder.state == .saving) "Saving…" else switch (a.recorder.source) {
