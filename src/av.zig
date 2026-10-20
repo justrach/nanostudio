@@ -46,6 +46,26 @@ pub extern "c" fn CVPixelBufferUnlockBaseAddress(pb: CVPixelBufferRef, flags: u6
 pub extern "c" fn CVPixelBufferCreate(allocator: ?*anyopaque, width: usize, height: usize, format: u32, attrs: ?Object, out: *?CVPixelBufferRef) i32;
 pub extern "c" fn CVPixelBufferPoolCreatePixelBuffer(allocator: ?*anyopaque, pool: *anyopaque, out: *?CVPixelBufferRef) i32;
 pub extern "c" fn CACurrentMediaTime() f64;
+pub extern "c" fn CMSampleBufferGetDataBuffer(sb: CMSampleBufferRef) ?*anyopaque;
+pub extern "c" fn CMBlockBufferGetDataLength(bb: *anyopaque) usize;
+pub extern "c" fn CMBlockBufferCopyDataBytes(bb: *anyopaque, offset: usize, len: usize, dest: *anyopaque) i32;
+pub extern "c" fn CMBlockBufferCreateWithMemoryBlock(allocator: ?*anyopaque, memory: ?*anyopaque, block_len: usize, block_allocator: ?*anyopaque, custom: ?*const anyopaque, offset: usize, len: usize, flags: u32, out: *?*anyopaque) i32;
+pub extern "c" fn CMBlockBufferReplaceDataBytes(src: *const anyopaque, dest: *anyopaque, offset: usize, len: usize) i32;
+pub extern "c" fn CMAudioFormatDescriptionCreate(allocator: ?*anyopaque, asbd: *const AudioStreamBasicDescription, layout_size: usize, layout: ?*const anyopaque, cookie_size: usize, cookie: ?*const anyopaque, extensions: ?Object, out: *?*anyopaque) i32;
+pub extern "c" fn CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: ?*anyopaque, data: *anyopaque, format: *anyopaque, samples: isize, pts: CMTime, packets: ?*const anyopaque, out: *?CMSampleBufferRef) i32;
+
+/// CoreAudio's description of a PCM stream.
+pub const AudioStreamBasicDescription = extern struct {
+    sample_rate: f64,
+    format_id: u32,
+    format_flags: u32,
+    bytes_per_packet: u32,
+    frames_per_packet: u32,
+    bytes_per_frame: u32,
+    channels_per_frame: u32,
+    bits_per_channel: u32,
+    reserved: u32 = 0,
+};
 
 pub extern "c" const AVMediaTypeVideo: Object;
 pub extern "c" const AVFileTypeMPEG4: Object;
@@ -59,14 +79,25 @@ pub extern "c" const AVVideoAverageBitRateKey: Object;
 pub extern "c" const AVVideoExpectedSourceFrameRateKey: Object;
 pub extern "c" const AVVideoMaxKeyFrameIntervalDurationKey: Object;
 pub extern "c" const AVVideoAllowFrameReorderingKey: Object;
+pub extern "c" const AVMediaTypeAudio: Object;
+pub extern "c" const AVFormatIDKey: Object;
+pub extern "c" const AVSampleRateKey: Object;
+pub extern "c" const AVNumberOfChannelsKey: Object;
+pub extern "c" const AVEncoderBitRateKey: Object;
+pub extern "c" const AVLinearPCMBitDepthKey: Object;
+pub extern "c" const AVLinearPCMIsFloatKey: Object;
+pub extern "c" const AVLinearPCMIsBigEndianKey: Object;
+pub extern "c" const AVLinearPCMIsNonInterleaved: Object;
 pub extern "c" const kCVPixelBufferPixelFormatTypeKey: Object;
 pub extern "c" const kCVPixelBufferWidthKey: Object;
 pub extern "c" const kCVPixelBufferHeightKey: Object;
 pub extern "c" const kCVPixelBufferMetalCompatibilityKey: Object;
 pub extern "c" const kCVPixelBufferIOSurfacePropertiesKey: Object;
 
-/// FourCC pixel formats.
+/// FourCC pixel and audio formats.
 pub const bgra: u32 = fourcc("BGRA");
+pub const aac: u32 = fourcc("aac ");
+pub const lpcm: u32 = fourcc("lpcm");
 pub const nv12: u32 = fourcc("420v");
 
 pub fn fourcc(s: *const [4]u8) u32 {
@@ -124,4 +155,17 @@ pub fn errorText(err: ?Object) []const u8 {
 /// A frame as nanoui shows it: the pixel buffer wrapped, not copied.
 pub fn texture(pb: CVPixelBufferRef) nanoui.ui.Texture {
     return .{ .width = @intCast(CVPixelBufferGetWidth(pb)), .height = @intCast(CVPixelBufferGetHeight(pb)), .pixel_buffer = pb };
+}
+
+/// AAC at 48 kHz, stereo: how audio is kept.
+pub fn aacSettings() Object {
+    return dict(&.{ AVFormatIDKey, AVSampleRateKey, AVNumberOfChannelsKey, AVEncoderBitRateKey }, &.{ number(aac), number(48000), number(2), number(160_000) });
+}
+
+/// 16-bit interleaved PCM at 48 kHz, stereo: how audio is read to be mixed.
+pub fn pcmSettings() Object {
+    return dict(
+        &.{ AVFormatIDKey, AVSampleRateKey, AVNumberOfChannelsKey, AVLinearPCMBitDepthKey, AVLinearPCMIsFloatKey, AVLinearPCMIsBigEndianKey, AVLinearPCMIsNonInterleaved },
+        &.{ number(lpcm), number(48000), number(2), number(16), number(false), number(false), number(false) },
+    );
 }

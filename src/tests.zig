@@ -13,4 +13,5 @@ test {
     _ = @import("library.zig");
     _ = @import("tests_export.zig");
     _ = @import("tests_ui.zig");
+    _ = @import("tests_audio.zig");
 }

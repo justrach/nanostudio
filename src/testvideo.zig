@@ -2,6 +2,7 @@
 //! time (it lightens second by second: gray survives the codec's 4:2:0
 //! colors, where a saturated red does not) with a white square sliding across,
 //! written with the app's own writer, and a recording.json beside them.
+//! With sound: a 440 Hz tone whose loudness tells the time the same way.
 const std = @import("std");
 const av = @import("av.zig");
 const writer = @import("writer.zig");
@@ -30,18 +31,85 @@ pub fn frame(buf: []u8, t: f64) void {
     };
 }
 
+/// The tone's loudness (RMS, 0 to 1) at time `t`.
+pub fn loudnessOf(t: f64) f64 {
+    return (0.1 + 0.2 * t) / std.math.sqrt2;
+}
+
+/// The tone from `t` for `frames` samples (48 kHz stereo), as a sample buffer.
+fn tone(format: *anyopaque, t: f64, frames: usize) !av.CMSampleBufferRef {
+    var pcm: [1600 * 2]i16 = undefined;
+    for (0..frames) |i| {
+        const s = t + @as(f64, @floatFromInt(i)) / 48000;
+        const v: i16 = @intFromFloat(@sin(s * 440 * 2 * std.math.pi) * (0.1 + 0.2 * s) * 32767);
+        pcm[2 * i] = v;
+        pcm[2 * i + 1] = v;
+    }
+    var block: ?*anyopaque = null;
+    if (av.CMBlockBufferCreateWithMemoryBlock(null, null, frames * 4, null, null, 0, frames * 4, 1, &block) != 0) return error.Audio;
+    defer av.CFRelease(block.?);
+    if (av.CMBlockBufferReplaceDataBytes(&pcm, block.?, 0, frames * 4) != 0) return error.Audio;
+    var sb: ?av.CMSampleBufferRef = null;
+    if (av.CMAudioSampleBufferCreateReadyWithPacketDescriptions(null, block.?, format, @intCast(frames), av.CMTime.of(t), null, &sb) != 0) return error.Audio;
+    return sb.?;
+}
+
+const Feed = struct {
+    w: *writer.Writer,
+    format: *anyopaque,
+    t: f64 = 0,
+    until: f64 = 0,
+    end: f64,
+    forced: bool = false,
+
+    /// Appends the next buffer up to `until` (or past it when the writer asks).
+    fn more(f: *Feed) bool {
+        if (f.t >= f.end - 0.5 / @as(f64, fps)) return false;
+        if (f.t >= f.until and !f.forced) return false;
+        const sb = tone(f.format, f.t, 48000 / fps) catch return false;
+        defer av.CFRelease(sb);
+        if (!f.w.appendAudio(0, sb)) return false;
+        f.t += 1.0 / @as(f64, fps);
+        return true;
+    }
+
+    fn call(ctx: *anyopaque) bool {
+        const f: *Feed = @ptrCast(@alignCast(ctx));
+        f.forced = true;
+        defer f.forced = false;
+        return f.more();
+    }
+};
+
 /// screen.mp4 of `seconds` in `dir`.
 pub fn video(gpa: std.mem.Allocator, dir: []const u8, seconds: f64) !void {
+    return videoWith(gpa, dir, seconds, false);
+}
+
+/// screen.mp4 of `seconds` in `dir`, with the tone when `sound`.
+pub fn videoWith(gpa: std.mem.Allocator, dir: []const u8, seconds: f64, sound: bool) !void {
     const path = try std.fs.path.join(gpa, &.{ dir, "screen.mp4" });
     defer gpa.free(path);
-    var w = try writer.Writer.create(path, .{ .width = width, .height = height, .fps = fps });
+    var w = try writer.Writer.create(path, .{ .width = width, .height = height, .fps = fps, .audio_tracks = @intFromBool(sound) });
     defer w.deinit();
+    const asbd: av.AudioStreamBasicDescription = .{ .sample_rate = 48000, .format_id = av.lpcm, .format_flags = 4 | 8, .bytes_per_packet = 4, .frames_per_packet = 1, .bytes_per_frame = 4, .channels_per_frame = 2, .bits_per_channel = 16 };
+    var format: ?*anyopaque = null;
+    if (av.CMAudioFormatDescriptionCreate(null, &asbd, 0, null, 0, null, null, &format) != 0) return error.Audio;
+    defer av.CFRelease(format.?);
     const buf = try gpa.alloc(u8, width * height * 4);
     defer gpa.free(buf);
     const n: usize = @intFromFloat(seconds * fps);
+    // The tone, a little ahead of the frames, and more when the writer asks.
+    var feed: Feed = .{ .w = &w, .format = format.?, .end = seconds };
+    if (sound) w.feeder = .{ .ctx = &feed, .more = Feed.call };
     for (0..n) |i| {
         const t = @as(f64, @floatFromInt(i)) / fps;
         frame(buf, t);
+        if (sound) {
+            w.startAt(0);
+            feed.until = t + 0.2;
+            while (feed.more()) {}
+        }
         if (!w.appendBgra(buf, width * 4, t)) return error.Append;
     }
     try w.finish();

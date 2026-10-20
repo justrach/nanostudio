@@ -18,12 +18,17 @@ pub const Art = struct {
     gradient: [art.gradient_size * art.gradient_size * 4]u8 = undefined,
     /// What `gradient` holds: a background and the canvas's shape.
     gradient_for: ?struct { bg: usize, ratio: f32 } = null,
-    wallpaper: ?art.Picture = null,
-    wallpaper_for: ?usize = null,
+    /// The picture behind (a wallpaper, or a file), and what it is.
+    picture: ?art.Picture = null,
+    picture_for: u64 = 0,
+    /// It blurred, and by how much.
+    blurred: ?art.Picture = null,
+    blurred_for: struct { key: u64 = 0, blur: f32 = 0 } = .{},
 
     pub fn deinit(a: *Art) void {
         for (a.cursors) |c| if (c) |px| a.gpa.free(px);
-        if (a.wallpaper) |w| a.gpa.free(w.bgra);
+        if (a.picture) |p| a.gpa.free(p.bgra);
+        if (a.blurred) |p| a.gpa.free(p.bgra);
     }
 
     fn cursor(a: *Art, which: style_mod.CursorStyle) ?ui.Texture {
@@ -32,29 +37,43 @@ pub const Art = struct {
         return .{ .width = art.cursor_w, .height = art.cursor_h, .bgra = a.cursors[i].? };
     }
 
-    /// The background's pixels for a `w` × `h` canvas.
-    fn background(a: *Art, index: usize, w: f32, h: f32) ?ui.Texture {
-        switch (style_mod.fill(index)) {
+    /// The picture at `path`, decoded once; blurred by `blur` (0 to 1).
+    fn pictureAt(a: *Art, path: []const u8, blur: f32) ?ui.Texture {
+        const key = std.hash.Wyhash.hash(0, path);
+        if (a.picture_for != key) {
+            if (a.picture) |old| a.gpa.free(old.bgra);
+            a.picture = art.decode(a.gpa, path, 2560) catch null;
+            a.picture_for = key;
+        }
+        const p = a.picture orelse return null;
+        if (blur <= 0.01) return .{ .width = p.width, .height = p.height, .bgra = p.bgra };
+        if (a.blurred == null or a.blurred_for.key != key or @abs(a.blurred_for.blur - blur) > 1e-3) {
+            if (a.blurred) |old| a.gpa.free(old.bgra);
+            a.blurred = art.blurred(a.gpa, p, blur) catch null;
+            a.blurred_for = .{ .key = key, .blur = blur };
+        }
+        const b = a.blurred orelse return null;
+        return .{ .width = b.width, .height = b.height, .bgra = b.bgra };
+    }
+
+    /// The background for a `w` × `h` canvas: pixels, or a plain color.
+    fn background(a: *Art, st: style_mod.Style, w: f32, h: f32) union(enum) { texture: ui.Texture, color: ui.Color, none } {
+        switch (style_mod.fillOf(st)) {
             .gradient => |g| {
                 const ratio = w / @max(h, 1);
-                const same = if (a.gradient_for) |f| f.bg == index and @abs(f.ratio - ratio) < 1e-3 else false;
+                const same = if (a.gradient_for) |f| f.bg == st.background and @abs(f.ratio - ratio) < 1e-3 else false;
                 if (!same) {
                     art.gradient(&a.gradient, g, w, h);
-                    a.gradient_for = .{ .bg = index, .ratio = ratio };
+                    a.gradient_for = .{ .bg = st.background, .ratio = ratio };
                 }
-                return .{ .width = art.gradient_size, .height = art.gradient_size, .bgra = &a.gradient };
+                return .{ .texture = .{ .width = art.gradient_size, .height = art.gradient_size, .bgra = &a.gradient } };
             },
+            .color => |c| return .{ .color = .hex(c) },
             .wallpaper => |i| {
-                if (a.wallpaper_for != i) {
-                    if (a.wallpaper) |old| a.gpa.free(old.bgra);
-                    a.wallpaper = null;
-                    a.wallpaper_for = i;
-                    var buf: [256]u8 = undefined;
-                    a.wallpaper = art.decode(a.gpa, style_mod.wallpaperPath(&buf, i), 2560) catch null;
-                }
-                const p = a.wallpaper orelse return null;
-                return .{ .width = p.width, .height = p.height, .bgra = p.bgra };
+                var buf: [256]u8 = undefined;
+                return if (a.pictureAt(style_mod.wallpaperPath(&buf, i), st.background_blur)) |t| .{ .texture = t } else .none;
             },
+            .image => |path| return if (a.pictureAt(path, st.background_blur)) |t| .{ .texture = t } else .none,
         }
     }
 };
@@ -115,9 +134,17 @@ pub fn draw(c: *ui.Context, a: *Art, w: f32, h: f32, f: Frame) void {
     defer c.end();
     _ = box;
     // The background, zoomed with the rest; a wallpaper covers the canvas.
-    if (a.background(st.background, w, h)) |bg| {
+    const whole = abs(place(v, .{ .x = 0, .y = 0, .w = w, .h = h }));
+    switch (a.background(st, w, h)) {
+        .none => {},
+        .color => |col| {
+            var fill = whole;
+            fill.background = col;
+            _ = c.leaf(fill, .none, null);
+        },
+        .texture => |bg| {
         var uv: [4]f32 = .{ 0, 0, 1, 1 };
-        if (style_mod.fill(st.background) == .wallpaper) {
+        if (style_mod.fillOf(st) != .gradient) {
             const pr = @as(f32, @floatFromInt(bg.width)) / @as(f32, @floatFromInt(bg.height));
             const cr = w / h;
             if (pr > cr) {
@@ -128,7 +155,8 @@ pub fn draw(c: *ui.Context, a: *Art, w: f32, h: f32, f: Frame) void {
                 uv = .{ 0, 0.5 - k / 2, 1, 0.5 + k / 2 };
             }
         }
-        ui.texture(c, abs(place(v, .{ .x = 0, .y = 0, .w = w, .h = h })), bg, uv, 1);
+        ui.texture(c, whole, bg, uv, 1);
+        },
     }
     const sr = place(v, screen);
     const radius = @min(st.radius * s * v.z, @min(sr.w, sr.h) / 2);

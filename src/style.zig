@@ -23,12 +23,22 @@ pub const wallpapers = [_][]const u8{
     "iMac Silver", "Mac Blue", "Mac Purple", "Mac Pink", "Mac Yellow", "Radial Sky Blue",
 };
 
-pub const Fill = union(enum) { gradient: Background, wallpaper: usize };
+/// Solid colors for the background, as Screen Studio's Color tab offers.
+pub const colors = [_]u24{ 0x16140f, 0x2a261e, 0xfaf8f3, 0xe8a33d, 0xd2674f, 0x7fa86b, 0x3b6fb0, 0x7a4ea3, 0x1f2937, 0xf3f4f6, 0x0ea5e9, 0xf472b6 };
+
+pub const Fill = union(enum) { gradient: Background, wallpaper: usize, color: u24, image: []const u8 };
 
 /// `Style.background` counts the gradients first, then the wallpapers.
 pub fn fill(background: usize) Fill {
     if (background >= backgrounds.len and background - backgrounds.len < wallpapers.len) return .{ .wallpaper = background - backgrounds.len };
     return .{ .gradient = backgrounds[background % backgrounds.len] };
+}
+
+/// What fills the background: a picture chosen, a color, or a preset.
+pub fn fillOf(s: Style) Fill {
+    if (s.background_image) |p| if (p.len > 0) return .{ .image = p };
+    if (s.background_color) |c| return .{ .color = c };
+    return fill(s.background);
 }
 
 /// A wallpaper's file.
@@ -121,6 +131,22 @@ pub const Style = struct {
     camera_circle: bool = false,
     keys_visible: bool = true,
     keys_position: u8 = 4,
+    /// nanostudio's own: a solid color or a picture (a file) instead of the
+    /// preset, and how much a picture behind is blurred (0 to 1).
+    background_color: ?u24 = null,
+    background_image: ?[]const u8 = null,
+    background_blur: f32 = 0,
+};
+
+/// Looks to start from, as Screen Studio's presets.
+pub const Preset = struct { name: []const u8, style: Style };
+
+pub const presets = [_]Preset{
+    .{ .name = "Default", .style = .{} },
+    .{ .name = "Minimal", .style = .{ .background_color = 0x16140f, .padding = 40, .radius = 10, .shadow = 0.3, .cursor_size = 1.3 } },
+    .{ .name = "Bold", .style = .{ .background = 2, .padding = 140, .radius = 24, .shadow = 1, .zoom = 2.4, .cursor_style = .amber, .cursor_size = 2 } },
+    .{ .name = "Social vertical", .style = .{ .background = 4, .aspect = .vertical, .padding = 60, .radius = 20, .zoom = 2.6 } },
+    .{ .name = "Clean light", .style = .{ .background_color = 0xfaf8f3, .padding = 80, .radius = 16, .shadow = 0.5, .cursor_style = .black } },
 };
 
 test "the canvas keeps its shape, even" {

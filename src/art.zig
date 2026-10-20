@@ -134,6 +134,59 @@ pub fn decode(gpa: std.mem.Allocator, path: []const u8, max: usize) !Picture {
     return .{ .bgra = bgra, .width = @intCast(w), .height = @intCast(h) };
 }
 
+/// `p` blurred by `amount` (0 to 1: up to 4% of its width), at most 1280
+/// pixels wide: three box blurs each way, close to a Gaussian.
+pub fn blurred(gpa: std.mem.Allocator, p: Picture, amount: f32) !Picture {
+    // Smaller first: a blur hides the detail, and it's cheaper.
+    const k: u32 = @max(1, (p.width + 1279) / 1280);
+    const w = p.width / k;
+    const h = p.height / k;
+    const out = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    errdefer gpa.free(out);
+    for (0..h) |y| for (0..w) |x| {
+        const src = ((y * k) * p.width + x * k) * 4;
+        @memcpy(out[(y * w + x) * 4 ..][0..4], p.bgra[src..][0..4]);
+    };
+    const r: usize = @intFromFloat(@max(1, std.math.clamp(amount, 0, 1) * @as(f32, @floatFromInt(w)) * 0.04));
+    const tmp = try gpa.alloc(u8, out.len);
+    defer gpa.free(tmp);
+    for (0..3) |_| {
+        boxPass(out, tmp, w, h, r, true);
+        boxPass(tmp, out, w, h, r, false);
+    }
+    return .{ .bgra = out, .width = w, .height = h };
+}
+
+/// One box blur of radius `r` along rows (`horizontal`) or columns.
+fn boxPass(src: []const u8, dst: []u8, w: u32, h: u32, r: usize, horizontal: bool) void {
+    const n: usize = if (horizontal) w else h;
+    const lines: usize = if (horizontal) h else w;
+    for (0..lines) |line| {
+        var sum: [4]u32 = .{ 0, 0, 0, 0 };
+        const at = struct {
+            fn f(l: usize, i: usize, ww: u32, hor: bool) usize {
+                return (if (hor) l * ww + i else i * ww + l) * 4;
+            }
+        }.f;
+        // The window [i - r, i + r], edges repeated.
+        var i: isize = -@as(isize, @intCast(r));
+        while (i <= @as(isize, @intCast(r))) : (i += 1) {
+            const k: usize = @intCast(std.math.clamp(i, 0, @as(isize, @intCast(n - 1))));
+            for (0..4) |ch| sum[ch] += src[at(line, k, w, horizontal) + ch];
+        }
+        const span: u32 = @intCast(2 * r + 1);
+        for (0..n) |x| {
+            for (0..4) |ch| dst[at(line, x, w, horizontal) + ch] = @intCast(sum[ch] / span);
+            const out_i = @max(0, @as(isize, @intCast(x)) - @as(isize, @intCast(r)));
+            const in_i = @min(@as(isize, @intCast(n - 1)), @as(isize, @intCast(x + r + 1)));
+            for (0..4) |ch| {
+                sum[ch] -= src[at(line, @intCast(out_i), w, horizontal) + ch];
+                sum[ch] += src[at(line, @intCast(in_i), w, horizontal) + ch];
+            }
+        }
+    }
+}
+
 test "the cursor's art: its fill inside, its outline at the edge, clear outside" {
     const gpa = std.testing.allocator;
     for (style.CursorStyle.all) |which| {
@@ -152,4 +205,21 @@ test "the cursor's art: its fill inside, its outline at the edge, clear outside"
         // Far from it (bottom right corner): clear.
         try std.testing.expectEqual(@as(u8, 0), px[(cursor_w * cursor_h - 1) * 4 + 3]);
     }
+}
+
+test "a blur smooths an edge, and keeps the size it says" {
+    const gpa = std.testing.allocator;
+    var px: [64 * 32 * 4]u8 = undefined;
+    for (0..32) |y| for (0..64) |x| {
+        const v: u8 = if (x < 32) 0 else 255;
+        px[(y * 64 + x) * 4 ..][0..4].* = .{ v, v, v, 255 };
+    };
+    const b = try blurred(gpa, .{ .bgra = &px, .width = 64, .height = 32 }, 1);
+    defer gpa.free(b.bgra);
+    try std.testing.expectEqual(@as(u32, 64), b.width);
+    // Left of the edge is lighter than black, right darker than white.
+    const left = b.bgra[(16 * 64 + 31) * 4];
+    const right = b.bgra[(16 * 64 + 32) * 4];
+    try std.testing.expect(left > 40 and left < 215 and right > 40 and right < 215);
+    try std.testing.expectEqual(@as(u8, 0), b.bgra[(16 * 64 + 2) * 4]);
 }

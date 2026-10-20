@@ -1,7 +1,8 @@
 //! Recording the screen, as the reference does: ScreenCaptureKit streams a
 //! display (without its cursor: nanostudio draws its own) into a real-time
-//! HEVC writer, while a global event monitor logs the cursor and its
-//! clicks on the same host clock as the frames. Stopping finishes the
+//! HEVC writer, with the system's sound and the microphone (macOS 15) as
+//! AAC tracks beside it, while a global event monitor logs the cursor and
+//! its clicks on the same host clock as the frames. Stopping finishes the
 //! video and writes recording.json beside it.
 const std = @import("std");
 const nanoui = @import("nanoui");
@@ -25,6 +26,34 @@ pub fn screenAccess() bool {
 /// Asks for screen access: only when the user asks (a button), never on launch.
 pub fn requestScreenAccess() bool {
     return CGRequestScreenCaptureAccess();
+}
+
+/// Whether ScreenCaptureKit can record the microphone (macOS 15 and later).
+pub fn microphoneSupported() bool {
+    return objc.msg(bool, objc.class("SCStreamConfiguration"), "instancesRespondToSelector:", .{objc.sel("setCaptureMicrophone:")});
+}
+
+/// The microphone's permission: 0 not asked, 1 restricted, 2 denied, 3 allowed.
+pub fn microphoneAccess() isize {
+    return objc.msg(objc.NSInteger, objc.class("AVCaptureDevice"), "authorizationStatusForMediaType:", .{av.AVMediaTypeAudio});
+}
+
+/// Asks for the microphone: only when the user turns it on.
+pub fn requestMicrophone(r: *Recorder) void {
+    if (microphoneAccess() != 0) return;
+    var block = objc.Block(Recorder, &.{bool}).init(r, struct {
+        fn f(self: *Recorder, _: bool) void {
+            objc.dispatchMain(self, struct {
+                fn g(ctx: ?*anyopaque) callconv(.c) void {
+                    const me: *Recorder = @ptrCast(@alignCast(ctx));
+                    if (me.state != .idle and me.state != .failed) return;
+                    me.pending = .ask;
+                    me.notify();
+                }
+            }.g);
+        }
+    }.f);
+    objc.msg(void, objc.class("AVCaptureDevice"), "requestAccessForMediaType:completionHandler:", .{ av.AVMediaTypeAudio, @as(*anyopaque, @ptrCast(&block)) });
 }
 
 /// A display, as the capture screen lists them.
@@ -73,7 +102,9 @@ pub const Recorder = struct {
     /// The windows that can be recorded (`listWindows`), their names owned.
     windows: std.ArrayList(WindowInfo) = .empty,
     /// What the shareable content was asked for.
-    pending: enum { start, list } = .start,
+    /// What was asked of macOS last: a recording, the windows, or the
+    /// microphone (only a recording's end opens the take).
+    pending: enum { start, list, ask } = .start,
     /// What's recorded's frame in global coordinates (top-left origin), for the cursor.
     frame: av.CGRect = undefined,
     primary_height: f64 = 0,
@@ -82,6 +113,12 @@ pub const Recorder = struct {
     monitor: ?av.Object = null,
     content: ?av.Object = null,
     writer: ?writer.Writer = null,
+    /// What's heard: the system's sound, the microphone.
+    system_audio: bool = true,
+    microphone: bool = false,
+    /// The writer's track for each kind of buffer the stream gives
+    /// (0 screen, 1 audio, 2 microphone).
+    tracks: [3]?usize = .{ null, null, null },
     cursor: std.ArrayList(rec.CursorSample) = .empty,
     /// The first frame's and the last frame's host time.
     first: ?f64 = null,
@@ -231,7 +268,17 @@ pub const Recorder = struct {
         const ph: usize = @as(usize, @intFromFloat(h)) & ~@as(usize, 1);
         const video = std.fs.path.join(r.gpa, &.{ r.dir, "screen.mp4" }) catch return r.fail("out of memory");
         defer r.gpa.free(video);
-        r.writer = writer.Writer.create(video, .{ .width = pw, .height = ph, .fps = 60, .codec = .hevc, .realtime = true, .bitrate = 40_000_000 }) catch return r.fail("The video encoder could not start.");
+        var n_tracks: u2 = 0;
+        r.tracks = .{ null, null, null };
+        if (r.system_audio) {
+            r.tracks[1] = n_tracks;
+            n_tracks += 1;
+        }
+        if (r.microphone and microphoneSupported()) {
+            r.tracks[2] = n_tracks;
+            n_tracks += 1;
+        }
+        r.writer = writer.Writer.create(video, .{ .width = pw, .height = ph, .fps = 60, .codec = .hevc, .realtime = true, .bitrate = 40_000_000, .audio_tracks = n_tracks }) catch return r.fail("The video encoder could not start.");
 
         const config = objc.new("SCStreamConfiguration");
         defer objc.release(config);
@@ -241,6 +288,13 @@ pub const Recorder = struct {
         objc.msg(void, config, "setPixelFormat:", .{av.bgra});
         objc.msg(void, config, "setShowsCursor:", .{false});
         objc.msg(void, config, "setQueueDepth:", .{@as(objc.NSInteger, 6)});
+        if (r.tracks[1] != null) {
+            objc.msg(void, config, "setCapturesAudio:", .{true});
+            objc.msg(void, config, "setExcludesCurrentProcessAudio:", .{true});
+            objc.msg(void, config, "setSampleRate:", .{@as(objc.NSInteger, 48000)});
+            objc.msg(void, config, "setChannelCount:", .{@as(objc.NSInteger, 2)});
+        }
+        if (r.tracks[2] != null) objc.msg(void, config, "setCaptureMicrophone:", .{true});
         const stream = objc.msg(av.Object, objc.alloc("SCStream"), "initWithFilter:configuration:delegate:", .{ filter, config, @as(?av.Object, null) });
         r.stream = stream;
         const cls = objc.defineClass(.{ .name = "NanostudioStreamOutput", .protocols = &.{"SCStreamOutput"}, .methods = &.{
@@ -251,7 +305,11 @@ pub const Recorder = struct {
         r.output = output;
         var err: ?av.Object = null;
         const queue = dispatch_queue_create("nanostudio.capture", null);
-        if (!objc.msg(bool, stream, "addStreamOutput:type:sampleHandlerQueue:error:", .{ output, @as(objc.NSInteger, 0), queue, &err })) return r.fail("The screen stream could not start.");
+        // Every kind on one queue: the writer is only ever touched there.
+        for (r.tracks, 0..) |track, kind| {
+            if (kind > 0 and track == null) continue;
+            if (!objc.msg(bool, stream, "addStreamOutput:type:sampleHandlerQueue:error:", .{ output, @as(objc.NSInteger, @intCast(kind)), queue, &err })) return r.fail("The screen stream could not start.");
+        }
         var block = objc.Block(Recorder, &.{?av.Object}).init(r, started);
         objc.msg(void, stream, "startCaptureWithCompletionHandler:", .{@as(*anyopaque, @ptrCast(&block))});
         // The cursor, wherever it goes: moves, drags, presses.
@@ -287,9 +345,14 @@ pub const Recorder = struct {
     }
 
     fn didOutput(obj: av.Object, _: objc.SEL, _: av.Object, sb: *anyopaque, kind: objc.NSInteger) callconv(.c) void {
-        if (kind != 0) return;
         const r = objc.getZig(Recorder, obj) orelse return;
         if (!av.CMSampleBufferIsValid(sb)) return;
+        if (kind == 1 or kind == 2) {
+            const track = r.tracks[@intCast(kind)] orelse return;
+            if (r.writer) |*w| _ = w.appendAudio(track, sb);
+            return;
+        }
+        if (kind != 0) return;
         // Only complete frames: idle and blank ones carry nothing new.
         const attachments = av.CMSampleBufferGetSampleAttachmentsArray(sb, false) orelse return;
         if (objc.msg(objc.NSUInteger, attachments, "count", .{}) == 0) return;
@@ -358,6 +421,8 @@ pub const Recorder = struct {
             r.writer = null;
         }
         const first = r.first orelse return r.fail("No frames came from the screen.");
+        // The sound stops with the last frame.
+        w.endAt(r.last + 1.0 / 60.0);
         w.finish() catch return r.fail("The video could not be finished.");
         // The cursor on the video's clock.
         var samples: std.ArrayList(rec.CursorSample) = .empty;

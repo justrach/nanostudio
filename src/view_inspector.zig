@@ -20,7 +20,7 @@ pub fn view(c: *ui.Context, a: *App) void {
     const p = a.project.?;
     // A drag ended: the next change is a new undo.
     if (!c.input.down) a.gesture = false;
-    const side = ui.div(c).column().w(312).hFull().bg(theme.panel).border(theme.border);
+    const side = ui.div(c).column().w(340).hFull().bg(theme.panel).border(theme.border);
     defer side.end();
     {
         const tabs = ui.div(c).row().wFull().p(12);
@@ -51,14 +51,29 @@ fn section(c: *ui.Context, title: []const u8) void {
 
 /// A labelled slider; true while it changes.
 fn slider(c: *ui.Context, a: *App, label: []const u8, value: *f32, min: f32, max: f32, comptime fmt: []const u8) bool {
+    return sliderReset(c, a, label, value, min, max, fmt, null);
+}
+
+/// A slider with Reset (to `default`), as Screen Studio's.
+fn sliderReset(c: *ui.Context, a: *App, label: []const u8, value: *f32, min: f32, max: f32, comptime fmt: []const u8, default: ?f32) bool {
     const r = ui.div(c).column().wFull().gap(6);
     defer r.end();
     {
-        const h = ui.div(c).row().wFull();
+        const h = ui.div(c).row().wFull().itemsCenter();
         defer h.end();
         ui.text(c, label, .{ .size = 12.5 });
         ui.spacer(c);
         ui.text(c, c.print(fmt, .{value.*}), .{ .size = 11.5, .color = theme.muted, .mono = true });
+        if (default) |d| if (@abs(value.* - d) > 1e-4) {
+            if (ui.button(c, "Reset", .{ .variant = .ghost, .size = 11 }).clicked) {
+                a.gesture = false;
+                edit(a);
+                value.* = d;
+                a.project.?.changed();
+                a.gesture = false;
+                return true;
+            }
+        };
     }
     var v = value.*;
     if (!ui.slider(c, &v, .{ .min = min, .max = max, .width = .fill })) return false;
@@ -120,26 +135,44 @@ fn selection(c: *ui.Context, a: *App) void {
 
 fn design(c: *ui.Context, a: *App) void {
     const p = a.project.?;
+    const d: style_mod.Style = .{};
     section(c, "BACKGROUND");
-    if (!swatches_made) {
-        for (style_mod.backgrounds, 0..) |bg, i| art.gradient(&swatches[i], bg, 1, 1);
-        swatches_made = true;
-    }
     {
-        const grid = ui.div(c).row().wFull().gap(4);
-        defer grid.end();
-        for (style_mod.backgrounds, 0..) |_, i| swatch(c, a, i, .{ .width = art.gradient_size, .height = art.gradient_size, .bgra = &swatches[i] });
+        var sel: usize = @intFromEnum(a.bg_tab);
+        if (ui.segmented(c, &.{ "Wallpaper", "Gradient", "Color", "Image" }, &sel)) a.bg_tab = @enumFromInt(sel);
     }
-    {
-        const grid = ui.div(c).row().wFull().gap(4);
-        defer grid.end();
-        for (0..7) |w| wallpaper(c, a, w);
+    switch (a.bg_tab) {
+        .wallpaper => {
+            for (0..2) |row| {
+                const grid = ui.div(c).row().wFull().gap(4);
+                defer grid.end();
+                const from = row * 7;
+                for (from..@min(from + 7, style_mod.wallpapers.len)) |w| wallpaper(c, a, w);
+            }
+        },
+        .gradient => {
+            if (!swatches_made) {
+                for (style_mod.backgrounds, 0..) |bg, i| art.gradient(&swatches[i], bg, 1, 1);
+                swatches_made = true;
+            }
+            const grid = ui.div(c).row().wFull().gap(4);
+            defer grid.end();
+            for (style_mod.backgrounds, 0..) |_, i| swatch(c, a, i, .{ .width = art.gradient_size, .height = art.gradient_size, .bgra = &swatches[i] });
+        },
+        .color => for (0..2) |row| {
+            const grid = ui.div(c).row().wFull().gap(4);
+            defer grid.end();
+            for (style_mod.colors[row * 6 .. row * 6 + 6]) |col| colorSwatch(c, a, col);
+        },
+        .image => {
+            const r = ui.div(c).row().wFull().gap(8).itemsCenter();
+            defer r.end();
+            if (ui.button(c, "Choose image…", .{ .size = 12, .icon = "photo" }).clicked) a.chooseBackground();
+            if (p.style.background_image) |path| ui.text(c, std.fs.path.basename(path), .{ .size = 11.5, .color = theme.muted }) else ui.text(c, "A picture of yours behind the screen", .{ .size = 11.5, .color = theme.faint });
+        },
     }
-    {
-        const grid = ui.div(c).row().wFull().gap(4);
-        defer grid.end();
-        for (7..style_mod.wallpapers.len) |w| wallpaper(c, a, w);
-    }
+    const blurs = style_mod.fillOf(p.style) == .wallpaper or style_mod.fillOf(p.style) == .image;
+    if (blurs) _ = sliderReset(c, a, "Background blur", &p.style.background_blur, 0, 1, "{d:.2}", d.background_blur);
     section(c, "FRAME");
     ui.text(c, "Aspect", .{ .size = 12.5 });
     var labels: [style_mod.Aspect.all.len][]const u8 = undefined;
@@ -150,20 +183,37 @@ fn design(c: *ui.Context, a: *App) void {
         p.style.aspect = @enumFromInt(sel);
         p.changed();
     }
-    _ = slider(c, a, "Padding", &p.style.padding, 0, 220, "{d:.0}");
-    _ = slider(c, a, "Roundness", &p.style.radius, 0, 48, "{d:.0}");
-    _ = slider(c, a, "Shadow", &p.style.shadow, 0, 1, "{d:.2}");
+    _ = sliderReset(c, a, "Padding", &p.style.padding, 0, 220, "{d:.0}", d.padding);
+    _ = sliderReset(c, a, "Rounded corners", &p.style.radius, 0, 48, "{d:.0}", d.radius);
+    _ = sliderReset(c, a, "Shadow", &p.style.shadow, 0, 1, "{d:.2}", d.shadow);
+}
+
+fn colorSwatch(c: *ui.Context, a: *App, col: u24) void {
+    const p = a.project.?;
+    ui.key(c, c.print("color-{x}", .{col}));
+    const on = p.style.background_image == null and p.style.background_color == col;
+    const b = ui.div(c).rounded(9).p(2).border(if (on) theme.accent else theme.background.alpha(0)).control();
+    defer b.end();
+    if (b.clicked()) {
+        p.edit();
+        p.style.background_color = col;
+        p.style.background_image = null;
+        p.changed();
+    }
+    _ = c.leaf(.{ .width = .{ .px = 32 }, .height = .{ .px = 32 }, .radius = 7, .background = .hex(col), .border = theme.border }, .none, null);
 }
 
 fn swatch(c: *ui.Context, a: *App, index: usize, tex: ui.Texture) void {
     const p = a.project.?;
     ui.key(c, c.print("bg-{d}", .{index}));
-    const on = p.style.background == index;
+    const on = p.style.background == index and p.style.background_color == null and p.style.background_image == null;
     const b = ui.div(c).rounded(9).p(2).border(if (on) theme.accent else theme.background.alpha(0)).control();
     defer b.end();
     if (b.clicked()) {
         p.edit();
         p.style.background = index;
+        p.style.background_color = null;
+        p.style.background_image = null;
         p.changed();
     }
     ui.texture(c, .{ .width = .{ .px = 26 }, .height = .{ .px = 26 }, .radius = 7 }, tex, .{ 0, 0, 1, 1 }, 1);

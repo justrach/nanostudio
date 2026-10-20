@@ -50,6 +50,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>$min_macos</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>nanostudio records your voice with the screen when you turn the microphone on.</string>
 </dict>
 </plist>
 PLIST

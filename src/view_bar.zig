@@ -1,15 +1,16 @@
 //! The capture bar, a floating window as Screen Studio's: ✕ to put it
-//! away, Display or Window, and Record; choosing Window lists the windows
-//! to pick from. While recording it shows the time and Stop, above
+//! away, Display or Window, the system's sound and the microphone, and
+//! Record; choosing Window lists the windows to pick from. While recording it shows the time and Stop, above
 //! everything, and is kept out of the recording.
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const theme = @import("theme.zig");
 const av = @import("av.zig");
+const capture = @import("capture.zig");
 const App = @import("app.zig").App;
 
-pub const width: f64 = 660;
+pub const width: f64 = 800;
 pub const height: f64 = 76;
 pub const list_height: f64 = 300;
 
@@ -49,6 +50,16 @@ fn choosing(c: *ui.Context, a: *App) void {
         divider(c);
         if (tool(c, "display", "Display", a.bar_mode == .display)) a.setBarMode(.display);
         if (tool(c, "macwindow", "Window", a.bar_mode == .window)) a.setBarMode(.window);
+        divider(c);
+        const r = &a.recorder;
+        if (tool(c, if (r.system_audio) "speaker.wave.2.fill" else "speaker.slash", "System audio", r.system_audio)) r.system_audio = !r.system_audio;
+        if (capture.microphoneSupported()) {
+            const denied = capture.microphoneAccess() == 2 or capture.microphoneAccess() == 1;
+            if (tool(c, if (r.microphone) "mic.fill" else "mic.slash", if (denied) "Mic blocked" else "Microphone", r.microphone and !denied)) {
+                r.microphone = !r.microphone and !denied;
+                if (r.microphone) capture.requestMicrophone(r);
+            }
+        }
         divider(c);
         const what = ui.div(c).column().grow().gap(2);
         {

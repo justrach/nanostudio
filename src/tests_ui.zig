@@ -45,6 +45,38 @@ test "the library, the editor, a split and an export, through the views" {
     try std.testing.expect(t.hasText("Cursor smoothing") and t.hasText("Auto from Clicks"));
     try t.screenshot("/tmp/nanostudio-editor-motion.png");
 
+    // Design: the Color tab, a color behind the screen.
+    try t.clickText("Design");
+    t.settle(0.1);
+    try t.clickText("Color");
+    t.settle(0.1);
+    try std.testing.expect(t.hasText("Background") or t.containsText("BACKGROUND"));
+    // The first color's swatch: a click picks it.
+    a.project.?.edit();
+    a.project.?.style.background_color = 0x3b6fb0;
+    a.project.?.changed();
+    t.settle(0.1);
+    try t.screenshot("/tmp/nanostudio-editor-color.png");
+    // Presets: Minimal's look.
+    try t.clickText("Presets");
+    t.settle(0.1);
+    try std.testing.expect(t.hasText("Minimal") and t.hasText("Social vertical"));
+    try t.clickText("Minimal");
+    t.settle(0.1);
+    try std.testing.expectEqual(@as(?u24, 0x16140f), a.project.?.style.background_color);
+    try std.testing.expectEqual(@as(f32, 40), a.project.?.style.padding);
+    // An empty zoom track: a click adds a zoom there.
+    a.project.?.zooms.clearRetainingCapacity();
+    a.project.?.changed();
+    t.settle(0.1);
+    try std.testing.expect(t.hasText("Click or drag to add zoom on cursor"));
+    const hint = t.findText("Click or drag to add zoom on cursor").?;
+    t.click(hint.x - 200, hint.y + hint.h / 2);
+    t.settle(0.1);
+    try std.testing.expectEqual(@as(usize, 1), a.project.?.zooms.items.len);
+    a.project.?.undo();
+    a.project.?.undo();
+
     // S splits the clip under the playhead (1.8 s).
     t.typeText("s");
     t.settle(0.1);
@@ -84,10 +116,13 @@ test "the capture bar: Display or Window; a window picked from the list" {
     var a = try App.init(gpa, io, home);
     defer a.deinit();
     var t: ui.Tester = undefined;
-    try t.init(gpa, .init(&a, @import("view_bar.zig").view), .{ .width = 660, .height = 376, .theme = theme.ui() });
+    try t.init(gpa, .init(&a, @import("view_bar.zig").view), .{ .width = 800, .height = 376, .theme = theme.ui() });
     defer t.deinit();
     t.settle(0.1);
-    try std.testing.expect(t.hasText("Display") and t.hasText("Window") and t.hasText("Record"));
+    try std.testing.expect(t.hasText("Display") and t.hasText("Window") and t.hasText("Record") and t.hasText("System audio"));
+    try t.clickText("System audio");
+    t.settle(0.1);
+    try std.testing.expect(!a.recorder.system_audio);
     try t.screenshot("/tmp/nanostudio-bar.png");
     // Windows as ScreenCaptureKit would list them (no capture here).
     for ([_][2][]const u8{ .{ "Safari", "nanoui on GitHub" }, .{ "Zed", "capture.zig" } }, 0..) |w, i| {

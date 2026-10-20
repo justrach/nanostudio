@@ -29,6 +29,22 @@ pub fn view(c: *ui.Context, a: *App) void {
         inspector.view(c, a);
     }
     timeline_view.view(c, a);
+    presets(c, a);
+}
+
+/// The Presets menu, over everything, under its button.
+fn presets(c: *ui.Context, a: *App) void {
+    if (!a.presets_open) return;
+    const at = a.presets_anchor;
+    const menu = ui.div(c).absolute().offset(at.x, at.y + at.h + 6).w(220).column().p(6).gap(2).rounded(12).bg(theme.panel).border(theme.border).shadowLg();
+    defer menu.end();
+    for (style_mod.presets, 0..) |pr, i| {
+        ui.key(c, c.print("preset-{d}", .{i}));
+        const row = ui.div(c).row().wFull().px(10).py(8).rounded(8).hover(theme.hover).control();
+        defer row.end();
+        if (row.clicked()) a.applyPreset(i);
+        ui.text(c, pr.name, .{ .size = 12.5 });
+    }
 }
 
 /// Space plays, ⌘Z undoes, ⇧⌘Z redoes, S splits, ⌫ removes the selection,
@@ -62,6 +78,15 @@ fn topbar(c: *ui.Context, a: *App) void {
     ui.text(c, std.fs.path.basename(p.dir), .{ .size = 13, .weight = .semibold });
     ui.text(c, c.print("{d}×{d} · {d:.0} fps", .{ p.info.width, p.info.height, p.info.fps }), .{ .size = 11.5, .color = theme.faint, .mono = true });
     ui.spacer(c);
+    {
+        const pb = ui.div(c).row().gap(6).itemsCenter().px(10).py(6).rounded(8).hover(theme.hover).control();
+        defer pb.end();
+        if (pb.clicked()) a.presets_open = !a.presets_open;
+        if (pb.interaction().rect) |r| a.presets_anchor = r;
+        ui.icon(c, "sparkles", .{ .size = 13, .color = theme.muted });
+        ui.text(c, "Presets", .{ .size = 12.5 });
+        ui.icon(c, "chevron.down", .{ .size = 9, .color = theme.muted });
+    }
     if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "arrow.uturn.backward" }).clicked) p.undo();
     if (ui.button(c, "", .{ .variant = .ghost, .size = 12, .icon = "arrow.uturn.forward" }).clicked) p.redo();
     if (a.exporting) |e| {

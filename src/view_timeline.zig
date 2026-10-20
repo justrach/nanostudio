@@ -100,11 +100,23 @@ pub fn removeSelected(a: *App) void {
 fn drags(c: *ui.Context, a: *App, x0: f32, W: f32, dur: f64) void {
     const p = a.project.?;
     const pl = &a.player.?;
+    const t = std.math.clamp(@as(f64, @floatCast((c.input.mouse.x - x0) / W)) * dur, 0, dur);
     if (!c.input.down) {
+        // A zoom drawn on its track: from where the press began to here
+        // (a click: two seconds from there).
+        if (a.drag == .new_zoom) {
+            const d = a.drag.new_zoom;
+            const lo = @min(d.from, d.to);
+            const hi = @max(d.from, d.to);
+            if (hi - lo < 0.2) p.addZoom(p.timeline.toSource(lo) + 0.3) else {
+                p.addZoom(p.timeline.toSource(lo) + 0.3);
+                if (p.selection == .zoom) p.zooms.items[p.selection.zoom].end = p.timeline.toSource(hi);
+                p.changed();
+            }
+        }
         a.drag = .none;
         return;
     }
-    const t = @as(f64, @floatCast((c.input.mouse.x - x0) / W)) * dur;
     switch (a.drag) {
         .none => {},
         .playhead => pl.seek(t, p.timeline),
@@ -117,6 +129,7 @@ fn drags(c: *ui.Context, a: *App, x0: f32, W: f32, dur: f64) void {
             p.timeline.moveEdge(d.index, d.start, src, p.rec.duration);
             p.changed();
         },
+        .new_zoom => |*d| d.to = t,
         .zoom_edge => |d| {
             if (d.index >= p.zooms.items.len) return;
             const z = &p.zooms.items[d.index];
@@ -134,7 +147,7 @@ fn ruler(c: *ui.Context, a: *App, W: f32, dur: f64) void {
     defer r.end();
     if (r.interaction().pressed and a.drag == .none) {
         a.drag = .playhead;
-        pl.playing = false;
+        pl.stop();
     }
     // A tick a second (every five when long), labelled.
     const every: f64 = if (dur > 60) 10 else if (dur > 20) 5 else 1;
@@ -172,8 +185,21 @@ fn clips(c: *ui.Context, a: *App, W: f32, dur: f64) void {
 
 fn zooms(c: *ui.Context, a: *App, W: f32, dur: f64) void {
     const p = a.project.?;
-    const track = ui.div(c).wFull().h(26).rounded(7).bg(theme.background);
+    const track = ui.div(c).wFull().h(26).rounded(7).bg(theme.background).center().control();
     defer track.end();
+    // Pressed on the track itself (not a zoom): a new zoom is drawn.
+    if (track.interaction().pressed and a.drag == .none) {
+        const r = track.interaction().rect orelse ui.Rect{ .x = 0, .y = 0, .w = W, .h = 26 };
+        const t0 = std.math.clamp(@as(f64, @floatCast((c.input.mouse.x - r.x) / W)) * dur, 0, dur);
+        a.drag = .{ .new_zoom = .{ .from = t0, .to = t0 } };
+    }
+    if (p.zooms.items.len == 0 and a.drag != .new_zoom) ui.text(c, "Click or drag to add zoom on cursor", .{ .size = 11, .color = theme.faint });
+    if (a.drag == .new_zoom) {
+        const d = a.drag.new_zoom;
+        const x = @as(f32, @floatCast(@min(d.from, d.to) / dur)) * W;
+        const w = @max(2, @as(f32, @floatCast(@abs(d.to - d.from) / dur)) * W);
+        _ = c.leaf(.{ .absolute = true, .offset = .{ .x = x, .y = 2 }, .width = .{ .px = w }, .height = .{ .px = 22 }, .radius = 6, .background = theme.zoom.alpha(0.6) }, .none, null);
+    }
     for (p.zooms.items, 0..) |z, i| {
         ui.key(c, c.print("zoom-{d}", .{i}));
         const o0 = p.timeline.toOutput(z.start);

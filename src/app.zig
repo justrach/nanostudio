@@ -24,6 +24,8 @@ pub const Drag = union(enum) {
     playhead,
     clip_edge: struct { index: usize, start: bool },
     zoom_edge: struct { index: usize, start: bool },
+    /// A new zoom being drawn on the zoom track, in output time.
+    new_zoom: struct { from: f64, to: f64 },
 };
 
 pub const App = struct {
@@ -38,6 +40,11 @@ pub const App = struct {
     player: ?Player = null,
     art: canvas.Art,
     panel: Panel = .design,
+    /// The inspector's background tab.
+    bg_tab: enum { wallpaper, gradient, color, image } = .wallpaper,
+    /// The top bar's Presets menu is open.
+    presets_open: bool = false,
+    presets_anchor: nanoui.ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     drag: Drag = .none,
     /// A slider's drag under way: its changes are one undo.
     gesture: bool = false,
@@ -114,6 +121,12 @@ pub const App = struct {
         a.player = .{ .path = p.video };
         a.screen = .editor;
         a.panel = .design;
+        a.bg_tab = switch (@import("style.zig").fillOf(p.style)) {
+            .wallpaper => .wallpaper,
+            .gradient => .gradient,
+            .color => .color,
+            .image => .image,
+        };
     }
 
     /// Back to the library, the edits saved.
@@ -156,6 +169,36 @@ pub const App = struct {
         e.deinit();
         a.exporting = null;
         a.redraw();
+    }
+
+    /// An open panel for a background picture, after this frame (a modal
+    /// panel can't run inside one).
+    pub fn chooseBackground(a: *App) void {
+        nanoui.App.after(0, a, chooseNow);
+    }
+
+    fn chooseNow(ctx: ?*anyopaque) callconv(.c) void {
+        const a: *App = @ptrCast(@alignCast(ctx));
+        const p = a.project orelse return;
+        const paths = (nanoui.dialog.open(a.gpa, .{ .title = "Background Picture", .button = "Choose", .extensions = &.{ "png", "jpg", "jpeg", "heic", "webp", "tiff" } }) catch null) orelse return;
+        defer nanoui.dialog.freePaths(a.gpa, paths);
+        if (paths.len == 0) return;
+        // Kept as long as the recording is open (its arena).
+        const path = p.arena.allocator().dupe(u8, paths[0]) catch return;
+        p.edit();
+        p.style.background_image = path;
+        p.changed();
+        a.redraw();
+    }
+
+    /// Applies preset `i`'s look, keeping the recording's zooms.
+    pub fn applyPreset(a: *App, i: usize) void {
+        const p = a.project orelse return;
+        p.edit();
+        p.style = @import("style.zig").presets[i].style;
+        for (p.zooms.items) |*z| z.scale = p.style.zoom;
+        p.changed();
+        a.presets_open = false;
     }
 
     pub fn showExport(a: *App) void {
